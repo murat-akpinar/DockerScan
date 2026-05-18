@@ -1,0 +1,29 @@
+@font-face {
+  font-family: 'Cascadia Mono';
+  src: url('/fonts/CascadiaMono-VariableFont.ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-family: 'Cascadia Mono', monospace;
+    font-weight: 500; /* Medium */
+    background-color: #1e1e2e; /* Fallback background color (catppuccin-base) */
+    color: #cdd6f4; /* Fallback text color (catppuccin-text) */
+    margin: 0;
+    padding: 0;
+  }
+  
+  #root {
+    min-height: 100vh;
+    background-color: #1e1e2e; /* Fallback background color */
+  }
+}
+
+
