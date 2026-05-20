@@ -1,8 +1,8 @@
-# VaultScan
+# DockScan
 
 [![License: GPL v3](https://img.shields.io/badge/license-GPLv3-1a1a1a?style=flat-square&labelColor=1a1a1a&color=8a6f3a)](LICENSE)
 [![Built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-1a1a1a?style=flat-square&labelColor=1a1a1a&color=d8b66b)](https://claude.com/claude-code)
-[![Status](https://img.shields.io/badge/status-alpha-1a1a1a?style=flat-square&labelColor=1a1a1a&color=c8302f)](https://github.com/murat-akpinar/VaultScan/releases)
+[![Status](https://img.shields.io/badge/status-alpha-1a1a1a?style=flat-square&labelColor=1a1a1a&color=c8302f)](https://github.com/murat-akpinar/DockScan/releases)
 [![Go](https://img.shields.io/badge/Go-1.25-1a1a1a?style=flat-square&labelColor=1a1a1a&color=00ADD8&logo=go&logoColor=fff)](https://go.dev)
 [![React](https://img.shields.io/badge/React-18-1a1a1a?style=flat-square&labelColor=1a1a1a&color=61DAFB&logo=react&logoColor=fff)](https://react.dev)
 [![Docker](https://img.shields.io/badge/Docker-compose-1a1a1a?style=flat-square&labelColor=1a1a1a&color=2496ED&logo=docker&logoColor=fff)](https://www.docker.com)
@@ -37,7 +37,7 @@ Trivy güvenlik tarama sonuçlarını toplayıp görselleştiren web dashboard u
 ```bash
 cp .example.env .env
 # EXPORT_DIR değerini mutlak path olarak ayarlayın, örn:
-# EXPORT_DIR=/home/user/vaultscan/export
+# EXPORT_DIR=/home/user/dockscan/export
 ```
 
 2. Container'ları build edip başlatın:
@@ -62,26 +62,26 @@ Trivy JSON raporlarını `export/` klasörüne koyun. Backend, dosya adından ve
    export/{proje}-{imaj}.json
    export/{proje}-{imaj}-{YYYYMMDD-HHMMSS}.json
    ```
-   Örnek: `export/vaultscan-backend-20251126-182000.json`
+   Örnek: `export/dockscan-backend-20251126-182000.json`
 
 2. **Dizin Yapısı** (Önerilen):
    ```
    export/{proje}/{imaj}.json
    export/{proje}/{imaj}-{YYYYMMDD-HHMMSS}.json
    ```
-   Örnek: `export/vaultscan/backend-20251126-182000.json`
+   Örnek: `export/dockscan/backend-20251126-182000.json`
 
 3. **ArtifactName ile Otomatik Parse** (En Kolay):
    JSON dosyasının içindeki `ArtifactName` alanından otomatik parse edilir:
-   - `ArtifactName: "vaultscan-backend:latest"` → Proje: `vaultscan`, İmaj: `backend`, Tag: `latest`
+   - `ArtifactName: "dockscan-backend:latest"` → Proje: `dockscan`, İmaj: `backend`, Tag: `latest`
 
 ### İmaj İsimlendirme Kuralı
 
 Script'ler `proje-adi_servis` formatını kullanır. `_` ayracının solu proje adı, sağı servis adıdır:
 
 ```
-vaultscan_backend:test-v1.0   → Proje: vaultscan  | İmaj: backend  | Tag: test-v1.0
-vaultscan_frontend:test-v1.0  → Proje: vaultscan  | İmaj: frontend | Tag: test-v1.0
+dockscan_backend:test-v1.0   → Proje: dockscan  | İmaj: backend  | Tag: test-v1.0
+dockscan_frontend:test-v1.0  → Proje: dockscan  | İmaj: frontend | Tag: test-v1.0
 myapp_api:v2.3                → Proje: myapp      | İmaj: api      | Tag: v2.3
 ```
 
@@ -91,8 +91,8 @@ Jenkins pipeline'ında build alınan her imaj için sunucuya SSH ile bağlanıp 
 
 ```bash
 # Belirli bir imaj ve tag'i tara
-./trigger-nexus.sh --image vaultscan_backend --tag test-v1.0
-./trigger-nexus.sh --image vaultscan_frontend --tag test-v1.0
+./trigger-nexus.sh --image dockscan_backend --tag test-v1.0
+./trigger-nexus.sh --image dockscan_frontend --tag test-v1.0
 ```
 
 Tarama tamamlandıktan sonra backend index'i ~60 saniye içinde güncellenir. Ardından `/api/grades` ile sonuç sorgulanabilir:
@@ -102,7 +102,7 @@ Tarama tamamlandıktan sonra backend index'i ~60 saniye içinde güncellenir. Ar
 sleep 70
 
 # Proje notunu kontrol et
-GRADE=$(curl -s "http://<host>:3017/api/grades?project=vaultscan" \
+GRADE=$(curl -s "http://<host>:3017/api/grades?project=dockscan" \
   | jq -r '.projects[0].grade')
 
 echo "Güvenlik Notu: $GRADE"
@@ -121,8 +121,8 @@ docker run --rm \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v $(pwd)/export:/output \
   aquasec/trivy:latest image \
-  --format json -o /output/vaultscan/backend-${TIMESTAMP}.json \
-  vaultscan-backend:latest
+  --format json -o /output/dockscan/backend-${TIMESTAMP}.json \
+  dockscan-backend:latest
 ```
 
 ## Harf Notu Sistemi
@@ -162,7 +162,7 @@ Proje notu, o projedeki imajların en kötü notunu alır.
   "generatedAt": "2026-05-14T10:30:00Z",
   "projects": [
     {
-      "projectName": "vaultscan",
+      "projectName": "dockscan",
       "imageCount": 2,
       "grade": "B",
       "images": [
@@ -200,7 +200,7 @@ TZ=Europe/Istanbul
 ## Proje Yapısı
 
 ```
-vaultscan/
+dockscan/
 ├── backend/                # Go backend (chi router)
 │   ├── main.go
 │   └── Dockerfile          # golang:alpine → alpine runtime (GOPROXY ARG)

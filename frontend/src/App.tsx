@@ -451,7 +451,7 @@ function App() {
 
       setLoadingImageDetails((prev) => ({ ...prev, [identifier]: true }));
       
-      // URL encode the path to handle subdirectories (e.g., "vaultscan/backend.json")
+      // URL encode the path to handle subdirectories (e.g., "dockscan/backend.json")
       // Split by / and encode each segment, then join back
       const encodedPath = identifier
         .split('/')

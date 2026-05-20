@@ -1,4 +1,4 @@
-module github.com/murat-akpinar/VaultScan/backend
+module github.com/murat-akpinar/DockScan/backend
 
 go 1.25
 

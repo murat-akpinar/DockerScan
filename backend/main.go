@@ -1054,8 +1054,8 @@ func compareScans(scan1Path, scan2Path, scan1Filename, scan2Filename string) (Co
 // 2. {project-name}-{image-name}-{timestamp}.json (flat with timestamp)
 // 3. {project-name}/{image-name}.json (directory structure)
 // 4. {project-name}/{image-name}-{timestamp}.json (directory with timestamp)
-// Example: "vaultscan-backend.json" -> project: "vaultscan", image: "backend"
-// Example: "vaultscan/backend.json" -> project: "vaultscan", image: "backend"
+// Example: "dockscan-backend.json" -> project: "dockscan", image: "backend"
+// Example: "dockscan/backend.json" -> project: "dockscan", image: "backend"
 func extractProjectAndImageFromPath(relPath, exportDir string) (projectName, imageName string) {
 	// Normalize path separators
 	relPath = filepath.ToSlash(relPath)
@@ -1238,7 +1238,7 @@ func compareVersionTags(tag1, tag2 string) int {
 
 // extractProjectImageTagFromArtifactName extracts project, image, and tag from ArtifactName
 // Format: {project-name}-{image-name}:{tag}
-// Example: "vaultscan-backend:latest" -> project: "vaultscan", image: "backend", tag: "latest"
+// Example: "dockscan-backend:latest" -> project: "dockscan", image: "backend", tag: "latest"
 // Example: "my-service-api:v1.0.0" -> project: "my-service", image: "api", tag: "v1.0.0"
 // Returns empty strings if parsing fails
 func extractProjectImageTagFromArtifactName(artifactName string) (projectName, imageName, tag string) {
@@ -1248,7 +1248,7 @@ func extractProjectImageTagFromArtifactName(artifactName string) (projectName, i
 
 	// Split by colon to get tag.
 	// ArtifactName genelde şu formatlarda gelir:
-	//  - "vaultscan-backend:latest"
+	//  - "dockscan-backend:latest"
 	//  - "yournexushost:8090/repository/my-repo/acme-app_frontend:test-v1.0"
 	// Bizim için önemli olan kısım, registry ve path'ten sonraki image adı ve tag'dir.
 	parts := strings.Split(artifactName, ":")
@@ -1316,7 +1316,7 @@ func extractProjectImageTagFromArtifactName(artifactName string) (projectName, i
 
 	// Hiçbir özel kural uymuyorsa, son tireye göre böl.
 	// Daha önce burada son tireye göre genel bir bölme yapılıyordu:
-	//   "vaultscan-backend" -> project: "vaultscan", image: "backend"
+	//   "dockscan-backend" -> project: "dockscan", image: "backend"
 	// Ancak artık backend/frontend/api gibi bilinen suffix'ler zaten yukarıdaki
 	// commonSuffixes listesi ile yakalandığı için, geriye kalan isimler tekil
 	// projeler olarak ele alınır.

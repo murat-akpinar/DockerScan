@@ -12,7 +12,7 @@ RUN go mod download
 
 COPY . .
 
-RUN go build -o /VaultScan-backend ./...
+RUN go build -o /DockScan-backend ./...
 
 FROM alpine:3.22 AS runtime
 
@@ -26,10 +26,10 @@ RUN apk update && \
 
 RUN addgroup -S app && adduser -S app -G app
 
-COPY --from=build /VaultScan-backend /usr/local/bin/VaultScan-backend
+COPY --from=build /DockScan-backend /usr/local/bin/DockScan-backend
 
 USER app
 
 EXPOSE 8080
 
-CMD ["VaultScan-backend"]
+CMD ["DockScan-backend"]

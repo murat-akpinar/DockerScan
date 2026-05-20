@@ -5,7 +5,7 @@ set -euo pipefail
 REGISTRY_HOST="yournexushost:8090"
 REPO_PREFIX="repository/my-repo"
 TRIVY_IMAGE="aquasec/trivy:latest"
-TRIVY_DB_PATH="/app/VaultScan/trivy-db"
+TRIVY_DB_PATH="/app/DockScan/trivy-db"
 
 # ---------------------------------------------------------------------------
 # Argüman ayrıştırma
@@ -23,8 +23,8 @@ done
 
 if [[ -z "$IMAGE_NAME" || -z "$TAG" ]]; then
     echo "Kullanım: $0 --image <imaj_adı> --tag <tag>"
-    echo "Örnek   : $0 --image VaultScan_backend --tag test-v1.0"
-    echo "Örnek   : $0 --image VaultScan_frontend --tag test-v1.0"
+    echo "Örnek   : $0 --image DockScan_backend --tag test-v1.0"
+    echo "Örnek   : $0 --image DockScan_frontend --tag test-v1.0"
     exit 1
 fi
 

@@ -8,7 +8,7 @@ REPO_PREFIX="repository/my-repo"
 TRIVY_IMAGE="aquasec/trivy:latest"
 
 # Trivy DB için local cache klasörü
-TRIVY_DB_PATH="/app/VaultScan/trivy-db"
+TRIVY_DB_PATH="/app/DockScan/trivy-db"
 
 # Fonksiyon: Bir proje+tag için en son tarama zamanını bul
 get_latest_scan_time() {
