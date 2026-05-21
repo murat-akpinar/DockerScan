@@ -73,6 +73,7 @@ type ScanSummary struct {
 	Tag           string         `json:"tag,omitempty"`
 	TotalVulns    int            `json:"totalVulns"`
 	SeverityCount map[string]int `json:"severityCount"`
+	Grade         string         `json:"grade"`
 }
 
 type ProjectSummary struct {
@@ -88,6 +89,7 @@ type ImageSummary struct {
 	ImageName     string         `json:"imageName"`
 	TotalVulns    int            `json:"totalVulns"`
 	SeverityCount map[string]int `json:"severityCount"`
+	Grade         string         `json:"grade"`
 	LastScan      time.Time      `json:"lastScan"`
 	ScanCount     int            `json:"scanCount"`
 	Scans         []ScanSummary  `json:"scans,omitempty"` // All scans for this image
@@ -1397,6 +1399,7 @@ func rebuildIndex(exportDir string) error {
 				}
 			}
 			summary.TotalVulns = total
+			summary.Grade = computeGrade(summary.SeverityCount)
 		}
 
 		// Fallback to filename parsing if ArtifactName parsing failed
@@ -1466,6 +1469,7 @@ func rebuildIndex(exportDir string) error {
 				for k, v := range latestScan.SeverityCount {
 					imageSummary.SeverityCount[k] = v
 				}
+				imageSummary.Grade = computeGrade(imageSummary.SeverityCount)
 			}
 
 			project.TotalVulns += imageSummary.TotalVulns
