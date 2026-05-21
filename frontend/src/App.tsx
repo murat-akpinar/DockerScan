@@ -148,30 +148,21 @@ function buildProjectImageLatestScan(allScans: ScanSummary[]) {
   return projectImageLatestScan;
 }
 
-// Calculate grade based on severity counts
+// Calculate grade based on severity counts — mirrors backend computeGrade in main.go
+// A: CRITICAL=0, HIGH=0
+// B: CRITICAL=0, HIGH≥1
+// C: CRITICAL 1–3
+// D: CRITICAL 4–9
+// F: CRITICAL ≥10
 function calculateGrade(severityCount: Record<string, number>): { grade: string; color: string } {
   const critical = severityCount['CRITICAL'] || 0;
   const high = severityCount['HIGH'] || 0;
-  const medium = severityCount['MEDIUM'] || 0;
-  const low = severityCount['LOW'] || 0;
 
-  // Grade A: No critical, low high/medium
-  if (critical === 0 && high <= 2 && medium <= 5) {
-    return { grade: 'A', color: 'catppuccin-green' };
-  }
-
-  // Grade B: No critical, moderate high/medium
-  if (critical === 0 && high <= 5 && medium <= 10) {
-    return { grade: 'B', color: 'catppuccin-blue' };
-  }
-
-  // Grade C: Low critical or moderate issues
-  if (critical <= 2 && high <= 8 && medium <= 15) {
-    return { grade: 'C', color: 'catppuccin-yellow' };
-  }
-
-  // Grade D: High critical or too many issues
-  return { grade: 'D', color: 'catppuccin-red' };
+  if (critical === 0 && high === 0) return { grade: 'A', color: 'catppuccin-green' };
+  if (critical === 0)               return { grade: 'B', color: 'catppuccin-blue' };
+  if (critical <= 3)                return { grade: 'C', color: 'catppuccin-yellow' };
+  if (critical <= 9)                return { grade: 'D', color: 'catppuccin-red' };
+  return                                   { grade: 'F', color: 'catppuccin-red' };
 }
 
 // Helper function to determine initial page from URL
