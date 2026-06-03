@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net/http"
@@ -37,11 +38,41 @@ type IndexData struct {
 	Scans       []ScanSummary
 	Projects    []ProjectSummary
 	GeneratedAt time.Time
+
+	// cveIndex maps a CVE ID to the indices (into Scans) of the scans that
+	// contain it. Lets /api/cve answer from memory instead of re-reading disk.
+	cveIndex map[string][]int
+
+	// imageScans maps projectName -> imageName -> sorted scan history.
+	// Lets the image scan-history endpoint answer from memory.
+	imageScans map[string]map[string][]ScanSummary
+
+	// etag is a content fingerprint (derived from GeneratedAt) used for
+	// HTTP conditional requests (If-None-Match -> 304 Not Modified).
+	etag string
+}
+
+// fileCacheEntry caches the parsed result of a single scan file so that
+// unchanged files are not re-parsed on every index rebuild.
+type fileCacheEntry struct {
+	modTime time.Time
+	size    int64
+	summary ScanSummary
+	cveIDs  []string // unique CVE IDs present in this file
 }
 
 var (
 	indexMu   sync.RWMutex
 	indexData *IndexData
+
+	// rebuildMu serializes index rebuilds so concurrent callers (periodic
+	// ticker + /api/reload) don't race on the shared file cache.
+	rebuildMu sync.Mutex
+	// fileCache is keyed by absolute file path; only touched inside rebuildIndex
+	// (serialized by rebuildMu).
+	fileCache = make(map[string]*fileCacheEntry)
+	// cveIntern deduplicates CVE ID strings across files to limit memory use.
+	cveIntern = make(map[string]string)
 )
 
 // walkJSONFiles recursively walks through directory and finds all JSON files
@@ -125,6 +156,18 @@ type Vulnerability struct {
 	PublishedDate    string                 `json:"PublishedDate,omitempty"`
 	LastModifiedDate string                 `json:"LastModifiedDate,omitempty"`
 	CVSS             map[string]interface{} `json:"CVSS,omitempty"`
+}
+
+// VulnDetail is the slimmed-down vulnerability shape returned by the scan
+// detail endpoint — only the fields the dashboard actually renders.
+type VulnDetail struct {
+	VulnerabilityID  string `json:"VulnerabilityID"`
+	PkgName          string `json:"PkgName"`
+	InstalledVersion string `json:"InstalledVersion"`
+	FixedVersion     string `json:"FixedVersion"`
+	Severity         string `json:"Severity"`
+	Title            string `json:"Title"`
+	PrimaryURL       string `json:"PrimaryURL,omitempty"`
 }
 
 // Comparison structures
@@ -279,6 +322,10 @@ func main() {
 			return
 		}
 
+		if notModified(w, r, current.etag) {
+			return
+		}
+
 		w.Header().Set(headerContentType, mimeApplicationJSON)
 		if err := json.NewEncoder(w).Encode(current.Scans); err != nil {
 			http.Error(w, errEncodeResponse, http.StatusInternalServerError)
@@ -294,6 +341,10 @@ func main() {
 
 		if current == nil {
 			http.Error(w, "index not ready", http.StatusServiceUnavailable)
+			return
+		}
+
+		if notModified(w, r, current.etag) {
 			return
 		}
 
@@ -318,6 +369,10 @@ func main() {
 
 		if current == nil {
 			http.Error(w, "index not ready", http.StatusServiceUnavailable)
+			return
+		}
+
+		if notModified(w, r, current.etag) {
 			return
 		}
 
@@ -377,13 +432,28 @@ func main() {
 			return
 		}
 
-		// Flatten all vulnerabilities from all results
-		var allVulns []Vulnerability
+		// Flatten all vulnerabilities, keeping only the fields the UI shows
+		// (drops Description/CVSS etc. — the heavy part of large reports).
+		var allVulns []VulnDetail
 		for _, result := range report.Results {
 			for _, vuln := range result.Vulnerabilities {
-				allVulns = append(allVulns, vuln)
+				allVulns = append(allVulns, VulnDetail{
+					VulnerabilityID:  vuln.VulnerabilityID,
+					PkgName:          vuln.PkgName,
+					InstalledVersion: vuln.InstalledVersion,
+					FixedVersion:     vuln.FixedVersion,
+					Severity:         vuln.Severity,
+					Title:            vuln.Title,
+					PrimaryURL:       vuln.PrimaryURL,
+				})
 			}
 		}
+
+		// Sort by severity (most critical first) so a capped UI list shows
+		// the important findings first.
+		sort.SliceStable(allVulns, func(i, j int) bool {
+			return severityRank(allVulns[i].Severity) < severityRank(allVulns[j].Severity)
+		})
 
 		w.Header().Set(headerContentType, mimeApplicationJSON)
 		response := map[string]interface{}{
@@ -408,81 +478,20 @@ func main() {
 			return
 		}
 
-		exportDir := os.Getenv("EXPORT_DIR")
-		if exportDir == "" {
-			exportDir = defaultExportDir
-		}
+		indexMu.RLock()
+		current := indexData
+		indexMu.RUnlock()
 
-		jsonFiles, err := walkJSONFiles(exportDir)
-		if err != nil {
-			http.Error(w, errReadExportDirectory, http.StatusInternalServerError)
+		if current == nil {
+			http.Error(w, "index not ready", http.StatusServiceUnavailable)
 			return
 		}
 
-		var scans []ScanSummary
-
-		for _, filePath := range jsonFiles {
-			relPath, err := filepath.Rel(exportDir, filePath)
-			if err != nil {
-				continue
-			}
-
-			info, err := os.Stat(filePath)
-			if err != nil {
-				continue
-			}
-
-			scanTime := extractTimestampFromPath(relPath, info.ModTime())
-
-			scanSummary := ScanSummary{
-				Filename:      relPath,
-				Size:          info.Size(),
-				ModifiedAt:    scanTime,
-				SeverityCount: make(map[string]int),
-			}
-
-			var fileProjectName, fileImageName, tag string
-			if report, err := parseTrivyJSON(filePath); err == nil {
-				scanSummary.ArtifactName = report.ArtifactName
-
-				// Extract project, image and tag from ArtifactName
-				fileProjectName, fileImageName, tag = extractProjectImageTagFromArtifactName(report.ArtifactName)
-				scanSummary.Tag = tag
-
-				total := 0
-				for _, result := range report.Results {
-					for _, vuln := range result.Vulnerabilities {
-						total++
-						severity := strings.ToUpper(vuln.Severity)
-						if severity == "" {
-							severity = "UNKNOWN"
-						}
-						scanSummary.SeverityCount[severity]++
-					}
-				}
-				scanSummary.TotalVulns = total
-				scanSummary.Grade = computeGrade(scanSummary.SeverityCount)
-			}
-
-			// Fallback to filename parsing if ArtifactName parsing failed
-			if fileProjectName != "" && fileImageName == "" {
-				fileProjectName, fileImageName = extractProjectAndImageFromPath(relPath, exportDir)
-			} else if fileProjectName == "" {
-				fileProjectName, fileImageName = extractProjectAndImageFromPath(relPath, exportDir)
-			}
-
-			if fileProjectName != projectName || fileImageName != imageName {
-				continue
-			}
-
-			scanSummary.ProjectName = fileProjectName
-			scanSummary.ImageName = fileImageName
-
-			scans = append(scans, scanSummary)
+		// Served straight from the in-memory index (already sorted newest-first).
+		scans := current.imageScans[projectName][imageName]
+		if scans == nil {
+			scans = []ScanSummary{}
 		}
-
-		// Sort scans for this image: newest version/date first
-		sortScansByTagAndDate(scans)
 
 		w.Header().Set(headerContentType, mimeApplicationJSON)
 		if err := json.NewEncoder(w).Encode(scans); err != nil {
@@ -550,105 +559,34 @@ func main() {
 			return
 		}
 
-		exportDir := os.Getenv("EXPORT_DIR")
-		if exportDir == "" {
-			exportDir = defaultExportDir
-		}
+		indexMu.RLock()
+		current := indexData
+		indexMu.RUnlock()
 
-		// Get all scan files
-		jsonFiles, err := walkJSONFiles(exportDir)
-		if err != nil {
-			http.Error(w, errReadExportDirectory, http.StatusInternalServerError)
+		if current == nil {
+			http.Error(w, "index not ready", http.StatusServiceUnavailable)
 			return
 		}
 
-		// Map to store results: projectName -> imageName -> scans with this CVE
+		if notModified(w, r, current.etag) {
+			return
+		}
+
+		// Look the CVE up in the precomputed index and group the matching
+		// scans by project -> image. No disk access.
 		projectImageScans := make(map[string]map[string][]ScanSummary)
-
-		// Iterate through all scan files
-		for _, filePath := range jsonFiles {
-			relPath, err := filepath.Rel(exportDir, filePath)
-			if err != nil {
+		for _, idx := range current.cveIndex[cveId] {
+			if idx < 0 || idx >= len(current.Scans) {
 				continue
 			}
-
-			info, err := os.Stat(filePath)
-			if err != nil {
+			s := current.Scans[idx]
+			if s.ProjectName == "" || s.ImageName == "" {
 				continue
 			}
-
-			scanTime := extractTimestampFromPath(relPath, info.ModTime())
-
-			// Parse the scan file
-			report, err := parseTrivyJSON(filePath)
-			if err != nil {
-				continue
+			if projectImageScans[s.ProjectName] == nil {
+				projectImageScans[s.ProjectName] = make(map[string][]ScanSummary)
 			}
-
-			// Check if this scan contains the CVE
-			hasCVE := false
-			for _, result := range report.Results {
-				for _, vuln := range result.Vulnerabilities {
-					if vuln.VulnerabilityID == cveId {
-						hasCVE = true
-						break
-					}
-				}
-				if hasCVE {
-					break
-				}
-			}
-
-			if !hasCVE {
-				continue
-			}
-
-			// Extract project, image and tag from ArtifactName
-			projectName, imageName, tag := extractProjectImageTagFromArtifactName(report.ArtifactName)
-
-			// Fallback to filename parsing if ArtifactName parsing failed
-			if projectName != "" && imageName == "" {
-				projectName, imageName = extractProjectAndImageFromPath(relPath, exportDir)
-			} else if projectName == "" {
-				projectName, imageName = extractProjectAndImageFromPath(relPath, exportDir)
-			}
-
-			if projectName == "" || imageName == "" {
-				continue
-			}
-
-			// Build scan summary
-			scanSummary := ScanSummary{
-				Filename:      relPath,
-				Size:          info.Size(),
-				ModifiedAt:    scanTime,
-				ArtifactName:  report.ArtifactName,
-				ProjectName:   projectName,
-				ImageName:     imageName,
-				Tag:           tag,
-				SeverityCount: make(map[string]int),
-			}
-
-			// Count vulnerabilities and severity for this scan
-			total := 0
-			for _, result := range report.Results {
-				for _, vuln := range result.Vulnerabilities {
-					total++
-					severity := strings.ToUpper(vuln.Severity)
-					if severity == "" {
-						severity = "UNKNOWN"
-					}
-					scanSummary.SeverityCount[severity]++
-				}
-			}
-			scanSummary.TotalVulns = total
-			scanSummary.Grade = computeGrade(scanSummary.SeverityCount)
-
-			// Add to results map
-			if projectImageScans[projectName] == nil {
-				projectImageScans[projectName] = make(map[string][]ScanSummary)
-			}
-			projectImageScans[projectName][imageName] = append(projectImageScans[projectName][imageName], scanSummary)
+			projectImageScans[s.ProjectName][s.ImageName] = append(projectImageScans[s.ProjectName][s.ImageName], s)
 		}
 
 		// Build response structure
@@ -715,6 +653,10 @@ func main() {
 
 		if current == nil {
 			http.Error(w, "index not ready", http.StatusServiceUnavailable)
+			return
+		}
+
+		if notModified(w, r, current.etag) {
 			return
 		}
 
@@ -900,6 +842,22 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(headerContentType, mimeApplicationJSON)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// notModified sets the ETag from the current index and, when the client's
+// If-None-Match already matches, writes 304 Not Modified and returns true.
+// This lets the browser reuse its cached copy when scan data is unchanged.
+func notModified(w http.ResponseWriter, r *http.Request, etag string) bool {
+	if etag == "" {
+		return false
+	}
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache") // revalidate, but allow 304
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return true
+	}
+	return false
 }
 
 func parseTrivyJSON(filePath string) (*TrivyReport, error) {
@@ -1356,68 +1314,134 @@ func extractProjectAndImage(filename string) (projectName, imageName string) {
 	return extractProjectAndImageFromPath(filename, "")
 }
 
+// internCVE deduplicates CVE ID strings so the same ID appearing in many files
+// shares a single backing string. Only called from rebuildIndex (serialized).
+func internCVE(id string) string {
+	if s, ok := cveIntern[id]; ok {
+		return s
+	}
+	cveIntern[id] = id
+	return id
+}
+
+// parseScanFile reads and summarizes a single Trivy JSON scan file.
+// It returns the per-file ScanSummary and the unique CVE IDs it contains.
+func parseScanFile(filePath, relPath, exportDir string, info os.FileInfo) (ScanSummary, []string) {
+	scanTime := extractTimestampFromPath(relPath, info.ModTime())
+
+	summary := ScanSummary{
+		Filename:      relPath,
+		Size:          info.Size(),
+		ModifiedAt:    scanTime,
+		SeverityCount: make(map[string]int),
+	}
+
+	var projectName, imageName, tag string
+	var cveIDs []string
+	if report, err := parseTrivyJSON(filePath); err == nil {
+		summary.ArtifactName = report.ArtifactName
+
+		projectName, imageName, tag = extractProjectImageTagFromArtifactName(report.ArtifactName)
+		summary.Tag = tag
+
+		seen := make(map[string]struct{})
+		total := 0
+		for _, result := range report.Results {
+			for _, vuln := range result.Vulnerabilities {
+				total++
+				severity := strings.ToUpper(vuln.Severity)
+				if severity == "" {
+					severity = "UNKNOWN"
+				}
+				summary.SeverityCount[severity]++
+				if id := vuln.VulnerabilityID; id != "" {
+					if _, ok := seen[id]; !ok {
+						seen[id] = struct{}{}
+						cveIDs = append(cveIDs, internCVE(id))
+					}
+				}
+			}
+		}
+		summary.TotalVulns = total
+		summary.Grade = computeGrade(summary.SeverityCount)
+	}
+
+	// Fallback to filename parsing if ArtifactName parsing failed
+	if projectName != "" && imageName == "" {
+		projectName, imageName = extractProjectAndImageFromPath(relPath, exportDir)
+	} else if projectName == "" {
+		projectName, imageName = extractProjectAndImageFromPath(relPath, exportDir)
+	}
+
+	summary.ProjectName = projectName
+	summary.ImageName = imageName
+	return summary, cveIDs
+}
+
 func rebuildIndex(exportDir string) error {
+	// Serialize rebuilds so concurrent callers don't race on fileCache.
+	rebuildMu.Lock()
+	defer rebuildMu.Unlock()
+
 	jsonFiles, err := walkJSONFiles(exportDir)
 	if err != nil {
 		return fmt.Errorf("%s: %w", errReadExportDirectory, err)
 	}
 
-	var scans []ScanSummary
-	scans = make([]ScanSummary, 0, len(jsonFiles))
+	scans := make([]ScanSummary, 0, len(jsonFiles))
+	// scanCVEs[i] holds the CVE IDs of scans[i] (kept aligned).
+	scanCVEs := make([][]string, 0, len(jsonFiles))
+
+	seenPaths := make(map[string]struct{}, len(jsonFiles))
+	parsed, reused := 0, 0
+	// fingerprint is a content-stable hash of the file set (path + modTime +
+	// size). It stays constant across rebuilds when nothing changed, so the
+	// ETag — and thus browser 304 caching — survives the periodic rebuild.
+	var fingerprint uint64
 
 	for _, filePath := range jsonFiles {
 		info, err := os.Stat(filePath)
 		if err != nil || info.IsDir() {
 			continue
 		}
+		seenPaths[filePath] = struct{}{}
 
 		relPath, err := filepath.Rel(exportDir, filePath)
 		if err != nil {
 			continue
 		}
 
-		scanTime := extractTimestampFromPath(relPath, info.ModTime())
+		h := fnv.New64a()
+		fmt.Fprintf(h, "%s|%d|%d", relPath, info.ModTime().UnixNano(), info.Size())
+		fingerprint ^= h.Sum64()
 
-		summary := ScanSummary{
-			Filename:      relPath,
-			Size:          info.Size(),
-			ModifiedAt:    scanTime,
-			SeverityCount: make(map[string]int),
+		// Incremental: reuse the cached parse if the file is unchanged.
+		// Trivy writes new timestamped files and never edits existing ones,
+		// so (modTime + size) is a reliable freshness key.
+		if c, ok := fileCache[filePath]; ok && c.modTime.Equal(info.ModTime()) && c.size == info.Size() {
+			scans = append(scans, c.summary)
+			scanCVEs = append(scanCVEs, c.cveIDs)
+			reused++
+			continue
 		}
 
-		var projectName, imageName, tag string
-		if report, err := parseTrivyJSON(filePath); err == nil {
-			summary.ArtifactName = report.ArtifactName
-
-			projectName, imageName, tag = extractProjectImageTagFromArtifactName(report.ArtifactName)
-			summary.Tag = tag
-
-			total := 0
-			for _, result := range report.Results {
-				for _, vuln := range result.Vulnerabilities {
-					total++
-					severity := strings.ToUpper(vuln.Severity)
-					if severity == "" {
-						severity = "UNKNOWN"
-					}
-					summary.SeverityCount[severity]++
-				}
-			}
-			summary.TotalVulns = total
-			summary.Grade = computeGrade(summary.SeverityCount)
+		summary, cveIDs := parseScanFile(filePath, relPath, exportDir, info)
+		fileCache[filePath] = &fileCacheEntry{
+			modTime: info.ModTime(),
+			size:    info.Size(),
+			summary: summary,
+			cveIDs:  cveIDs,
 		}
-
-		// Fallback to filename parsing if ArtifactName parsing failed
-		if projectName != "" && imageName == "" {
-			projectName, imageName = extractProjectAndImageFromPath(relPath, exportDir)
-		} else if projectName == "" {
-			projectName, imageName = extractProjectAndImageFromPath(relPath, exportDir)
-		}
-
-		summary.ProjectName = projectName
-		summary.ImageName = imageName
-
 		scans = append(scans, summary)
+		scanCVEs = append(scanCVEs, cveIDs)
+		parsed++
+	}
+
+	// Forget cache entries for files that no longer exist (e.g. cleaned up).
+	for path := range fileCache {
+		if _, ok := seenPaths[path]; !ok {
+			delete(fileCache, path)
+		}
 	}
 
 	// Build project summaries from scans
@@ -1455,19 +1479,24 @@ func rebuildIndex(exportDir string) error {
 		imageSummary.Scans = append(imageSummary.Scans, scanSummary)
 	}
 
+	// imageScans: projectName -> imageName -> sorted scan history (for the
+	// image scan-history endpoint, served straight from memory).
+	imageScans := make(map[string]map[string][]ScanSummary, len(projectsMap))
+
 	var projects []ProjectSummary
 	for projectName, project := range projectsMap {
 		project.TotalVulns = 0
 		project.SeverityCount = make(map[string]int)
+		imageScans[projectName] = make(map[string][]ScanSummary, len(imagesMap[projectName]))
 
-		for _, imageSummary := range imagesMap[projectName] {
-			scans := imageSummary.Scans
-			sortScansByTagAndDate(scans)
+		for imageName, imageSummary := range imagesMap[projectName] {
+			imgScans := imageSummary.Scans
+			sortScansByTagAndDate(imgScans)
 
-			imageSummary.ScanCount = len(scans)
+			imageSummary.ScanCount = len(imgScans)
 
-			if len(scans) > 0 {
-				latestScan := scans[0]
+			if len(imgScans) > 0 {
+				latestScan := imgScans[0]
 				imageSummary.LastScan = latestScan.ModifiedAt
 				imageSummary.TotalVulns = latestScan.TotalVulns
 				imageSummary.SeverityCount = make(map[string]int)
@@ -1482,6 +1511,7 @@ func rebuildIndex(exportDir string) error {
 				project.SeverityCount[severity] += count
 			}
 
+			imageScans[projectName][imageName] = imgScans
 			project.Images = append(project.Images, *imageSummary)
 
 			if imageSummary.LastScan.After(project.LastScan) {
@@ -1501,17 +1531,30 @@ func rebuildIndex(exportDir string) error {
 		projects = append(projects, *project)
 	}
 
+	// Build CVE index: cveID -> indices into scans.
+	cveIndex := make(map[string][]int)
+	for i, ids := range scanCVEs {
+		for _, id := range ids {
+			cveIndex[id] = append(cveIndex[id], i)
+		}
+	}
+
+	generatedAt := time.Now()
 	newIndex := &IndexData{
 		Scans:       scans,
 		Projects:    projects,
-		GeneratedAt: time.Now(),
+		GeneratedAt: generatedAt,
+		cveIndex:    cveIndex,
+		imageScans:  imageScans,
+		etag:        fmt.Sprintf(`"%x-%d"`, fingerprint, len(scans)),
 	}
 
 	indexMu.Lock()
 	indexData = newIndex
 	indexMu.Unlock()
 
-	log.Printf("index rebuilt: %d scans, %d projects", len(scans), len(projects))
+	log.Printf("index rebuilt: %d scans, %d projects (%d parsed, %d cached)",
+		len(scans), len(projects), parsed, reused)
 	return nil
 }
 
@@ -1647,6 +1690,22 @@ func softenGrade(grade string) string {
 		return "A"
 	default:
 		return "A"
+	}
+}
+
+// severityRank orders severities most-critical-first for sorting.
+func severityRank(severity string) int {
+	switch strings.ToUpper(severity) {
+	case "CRITICAL":
+		return 0
+	case "HIGH":
+		return 1
+	case "MEDIUM":
+		return 2
+	case "LOW":
+		return 3
+	default:
+		return 4
 	}
 }
 
