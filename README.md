@@ -10,11 +10,9 @@
 Trivy güvenlik tarama sonuçlarını toplayıp görselleştiren web dashboard uygulaması. CI/CD ortamlarında üretilen Trivy JSON çıktılarını tek bir merkezde toplayıp kolayca incelemenizi sağlar.
 
 <div align="center">
-  <img src="/images/dashboard.png" alt="Dashboard" width="100%" />
-  <br/><br/>
-  <img src="/images/project.png" alt="Project" width="49%" />
-  &nbsp;
-  <img src="/images/comparison.png" alt="Comparison" width="49%" />
+  <img src="/images/dashboard.png" alt="Dashboard" width="32%" />
+  <img src="/images/project.png" alt="Project" width="32%" />
+  <img src="/images/comparison.png" alt="Comparison" width="32%" />
 </div>
 
 ## Özellikler
