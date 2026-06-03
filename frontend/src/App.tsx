@@ -39,13 +39,46 @@ type ScanSummary = {
   grade: string;
 };
 
+// Bir tarama için zaman çizelgesi seri anahtarını üretir.
+// separateVersions false ise tüm tag'ler birleşik (proje + imaj);
+// true ise prod/test gibi ortamlar ayrı seri olarak gruplanır.
+const getTimelineSeriesKey = (scan: ScanSummary, separateVersions: boolean): string | null => {
+  if (!scan.projectName) return null;
+  const proj = scan.projectName;
+  const img = scan.imageName;
+  if (!img) return proj;
+
+  if (!separateVersions) {
+    // Tüm tag'ler birleşik, sadece proje + imaj
+    return `${proj} - ${img}`;
+  }
+
+  // Versiyonları ayır: özellikle prod/test gibi ortamlar için grupla
+  const tag = scan.tag || '';
+  let envLabel: string | null = null;
+  if (tag.startsWith('prod-')) envLabel = 'prod';
+  else if (tag.startsWith('test-')) envLabel = 'test';
+
+  if (envLabel) {
+    // Örn: "backend (prod)" / "backend (test)"
+    return `${proj} - ${img} (${envLabel})`;
+  }
+
+  // Diğer tag'ler için tam tag'i göster
+  if (tag) {
+    return `${proj} - ${img}:${tag}`;
+  }
+
+  return `${proj} - ${img}`;
+};
+
 type ImageSummary = {
   imageName: string;
   totalVulns: number;
   severityCount: Record<string, number>;
   grade: string;
   lastScan: string;
-  scans: ScanSummary[]; // All scans for this image
+  scans: ScanSummary[];
 };
 
 type Vulnerability = {
@@ -130,7 +163,7 @@ function buildProjectImageLatestScan(allScans: ScanSummary[]) {
   }
 
   allScans.forEach((scan) => {
-    if (!scan || !scan.projectName || !scan.imageName) return;
+    if (!scan?.projectName || !scan.imageName) return;
     const proj = scan.projectName;
     const img = scan.imageName;
 
@@ -150,8 +183,6 @@ function buildProjectImageLatestScan(allScans: ScanSummary[]) {
   return projectImageLatestScan;
 }
 
-// Maps a backend-computed grade letter to its display color.
-// Grade calculation lives exclusively in backend computeGrade (main.go).
 function gradeColor(grade: string): string {
   if (grade === 'A') return 'catppuccin-green';
   if (grade === 'B') return 'catppuccin-blue';
@@ -205,8 +236,6 @@ function App() {
   const [currentPage, setCurrentPage] = useState<Page>(getInitialPage);
   const [selectedProject, setSelectedProject] = useState<string | null>(getInitialSelectedProject);
   const [projectDetails, setProjectDetails] = useState<ProjectSummary | null>(null);
-  const [selectedFilename, setSelectedFilename] = useState<string | null>(null);
-  const [vulnDetails, setVulnDetails] = useState<Vulnerability[]>([]);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSeverity, setSelectedSeverity] = useState<string | null>(null);
@@ -215,16 +244,12 @@ function App() {
   const [loadingImageDetails, setLoadingImageDetails] = useState<Record<string, boolean>>({});
   const [allScans, setAllScans] = useState<ScanSummary[]>([]);
   const [scansLoaded, setScansLoaded] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0);
-  const [refreshing, setRefreshing] = useState(false);
   const [separateVersions, setSeparateVersions] = useState<boolean>(false); // Varsayılan: tag'siz grupla
-  const [showComparisonPage, setShowComparisonPage] = useState(false);
   const [comparisonData, setComparisonData] = useState<ComparisonResult | null>(null);
   const [selectedScan1, setSelectedScan1] = useState<string>('');
   const [selectedScan2, setSelectedScan2] = useState<string>('');
   const [comparisonLoading, setComparisonLoading] = useState(false);
   const [comparisonError, setComparisonError] = useState<string | null>(null);
-  const [comparisonTab, setComparisonTab] = useState<'summary' | 'added' | 'removed' | 'changed'>('summary');
 
   // Listen for browser back/forward buttons
   useEffect(() => {
@@ -248,7 +273,7 @@ function App() {
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
-  
+
   // Update URL when page changes (for bookmarking/sharing)
   useEffect(() => {
     if (currentPage === 'dashboard') {
@@ -268,10 +293,8 @@ function App() {
   }, [currentPage, selectedProject]);
 
   useEffect(() => {
-    if (!API_BASE) return;
-
     const loadProjects = async () => {
-    setLoading(true);
+      setLoading(true);
       try {
         const res = await fetch(`${API_BASE}/api/projects`);
         if (!res.ok) {
@@ -282,26 +305,19 @@ function App() {
         setError(null);
       } catch (err: any) {
         setError(err.message);
-        setProjects([]); // Ensure projects is always an array
+        setProjects([]);
       } finally {
         setLoading(false);
       }
     };
 
     loadProjects();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
+  }, []);
 
-  // Fetch all scans for timeline chart.
-  // Not: Projeler sayfasına ilk girişte yükü azaltmak için sadece
-  // dashboard, proje detayı veya karşılaştırma sayfasına girildiğinde
-  // (ve henüz yüklenmemişse) çağırıyoruz.
+  // Fetch all scans for timeline chart and project stats.
   useEffect(() => {
-    if (!API_BASE || scansLoaded) return;
+    if (scansLoaded) return;
 
-    // Projeler sayfasında iken yükleme yapma; diğer sayfalarda ihtiyaç olunca çek.
-    if (currentPage === 'projects') return;
-    
     const loadScans = async () => {
       try {
         const res = await fetch(`${API_BASE}/api/scans`);
@@ -313,18 +329,18 @@ function App() {
         setScansLoaded(true);
       } catch (err) {
         console.error('Failed to load scans:', err);
-        setAllScans([]); // Ensure allScans is always an array
+        setAllScans([]);
       }
     };
-    
+
     loadScans();
-  }, [API_BASE, currentPage, scansLoaded]);
+  }, [API_BASE, scansLoaded]);
 
   useEffect(() => {
-    if (!selectedProject || !API_BASE) return;
+    if (!selectedProject) return;
 
     const loadProjectDetails = async () => {
-    setLoadingDetails(true);
+      setLoadingDetails(true);
       try {
         const res = await fetch(`${API_BASE}/api/projects/${selectedProject}`);
         if (!res.ok) {
@@ -341,52 +357,11 @@ function App() {
     };
 
     loadProjectDetails();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedProject, refreshKey]);
-
-  useEffect(() => {
-    if (!selectedFilename || !API_BASE) return;
-    
-    const loadVulnDetails = async () => {
-    setLoadingDetails(true);
-      try {
-        const res = await fetch(`${API_BASE}/api/scans/${selectedFilename}`);
-        if (!res.ok) {
-          throw new Error(`API error: ${res.status}`);
-        }
-        const data: { vulnerabilities: Vulnerability[] } = await res.json();
-        setVulnDetails(data.vulnerabilities || []);
-      } catch (err) {
-        console.error('Failed to load details:', err);
-        setVulnDetails([]);
-      } finally {
-        setLoadingDetails(false);
-      }
-    };
-    
-    loadVulnDetails();
-  }, [selectedFilename]);
-
-  // Trigger immediate backend index rebuild then re-fetch all data
-  const handleRefresh = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    try {
-      await fetch(`${API_BASE}/api/reload`, { method: 'POST' });
-    } catch (e) {
-      console.warn('Backend refresh failed:', e);
-    } finally {
-      setAllScans([]);
-      setScansLoaded(false);
-      setImageVulnDetails({});
-      setRefreshKey((k) => k + 1);
-      setRefreshing(false);
-    }
-  };
+  }, [selectedProject]);
 
   // Compare scans function
   const compareScans = async () => {
-    if (!selectedScan1 || !selectedScan2 || !API_BASE) return;
+    if (!selectedScan1 || !selectedScan2) return;
     setComparisonLoading(true);
     setComparisonError(null);
     setComparisonData(null);
@@ -399,19 +374,18 @@ function App() {
         throw new Error(`API hatası (${response.status}): ${errorText || 'Sunucu hatası'}`);
       }
       const data: ComparisonResult = await response.json();
-      
+
       // Validate response structure
       if (!data || !data.scan1 || !data.scan2 || !data.summary) {
         throw new Error('Geçersiz API yanıtı');
       }
-      
+
       // Ensure arrays exist (for 0 vulnerability cases)
       if (!data.added) data.added = [];
       if (!data.removed) data.removed = [];
       if (!data.changed) data.changed = [];
-      
+
       setComparisonData(data);
-      setComparisonTab('summary');
       setComparisonError(null);
     } catch (error) {
       console.error('Comparison failed:', error);
@@ -425,24 +399,23 @@ function App() {
 
   // Load vulnerabilities for expanded scans (only for .json filenames)
   useEffect(() => {
-    if (!API_BASE || !projectDetails) return;
+    if (!projectDetails) return;
 
     expandedImages.forEach((identifier) => {
       // Only load if it's a filename (contains .json), not an image name
       if (!identifier.includes('.json')) return;
-      
+
       // Skip if already loaded
       if (imageVulnDetails[identifier] || loadingImageDetails[identifier]) return;
 
       setLoadingImageDetails((prev) => ({ ...prev, [identifier]: true }));
-      
-      // URL encode the path to handle subdirectories (e.g., "dockscan/backend.json")
-      // Split by / and encode each segment, then join back
+
+      // URL encode the path to handle subdirectories
       const encodedPath = identifier
         .split('/')
         .map(segment => encodeURIComponent(segment))
         .join('/');
-      
+
       // Load vulnerability details for this scan
       const loadVulnDetails = async () => {
         try {
@@ -462,17 +435,16 @@ function App() {
           setLoadingImageDetails((prev) => ({ ...prev, [identifier]: false }));
         }
       };
-      
+
       loadVulnDetails();
     });
   }, [expandedImages, API_BASE, projectDetails]);
 
   // Calculate overall statistics - aggregate from backend project summaries
   const overallStats = useMemo(() => {
-    // Ensure projects and allScans are arrays
     const safeProjects = Array.isArray(projects) ? projects : [];
     const safeAllScans = Array.isArray(allScans) ? allScans : [];
-    
+
     const totalProjects = safeProjects.length;
     const totalScans = safeProjects.reduce((sum, p) => sum + (p?.totalScans || 0), 0);
 
@@ -519,7 +491,6 @@ function App() {
     const safeProjects = Array.isArray(projects) ? projects : [];
     const safeAllScans = Array.isArray(allScans) ? allScans : [];
 
-    // Her proje için en son taramalardan severity hesaplamak için aynı index yapısını kullan
     const projectImageLatestScan = buildProjectImageLatestScan(safeAllScans);
 
     return safeProjects.filter((p) => {
@@ -549,41 +520,10 @@ function App() {
   }, [overallStats.severityCount]);
 
   // Prepare unified timeline chart data
-  // Her satır "Proje - İmaj" ikilisi olacak şekilde ayrıştırılır,
-  // her tarama ayrı bir nokta olarak gösterilir (iniş/çıkışları görebilmek için).
-  // separateVersions false ise tüm tag'ler birleşik, true ise özellikle prod/test gibi ortamlar ayrı seri olarak gösterilir.
   const unifiedTimelineData = useMemo(() => {
     const MAX_PROJECTS = 5; // En son taranan 5 proje
 
-    const getSeriesKey = (scan: ScanSummary): string | null => {
-      if (!scan.projectName) return null;
-      const proj = scan.projectName;
-      const img = scan.imageName;
-      if (!img) return proj;
-
-      if (!separateVersions) {
-        // Tüm tag'ler birleşik, sadece proje + imaj
-        return `${proj} - ${img}`;
-      }
-
-      // Versiyonları ayır: özellikle prod/test gibi ortamlar için grupla
-      const tag = scan.tag || '';
-      let envLabel: string | null = null;
-      if (tag.startsWith('prod-')) envLabel = 'prod';
-      else if (tag.startsWith('test-')) envLabel = 'test';
-
-      if (envLabel) {
-        // Örn: "backend (prod)" / "backend (test)"
-        return `${proj} - ${img} (${envLabel})`;
-      }
-
-      // Diğer tag'ler için tam tag'i göster
-      if (tag) {
-        return `${proj} - ${img}:${tag}`;
-              }
-
-      return `${proj} - ${img}`;
-    };
+    const getSeriesKey = (scan: ScanSummary) => getTimelineSeriesKey(scan, separateVersions);
 
     // Her proje için en son tarama zamanını bul
     const projectLastScanTime = new Map<string, number>();
@@ -598,8 +538,8 @@ function App() {
 
     // Projeleri en son tarama zamanına göre sırala (en yeni önce)
     const sortedProjects = Array.from(projectLastScanTime.entries())
-      .sort((a, b) => b[1] - a[1]) // En yeni önce
-      .slice(0, MAX_PROJECTS) // İlk 5 projeyi al
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, MAX_PROJECTS)
       .map(([projectName]) => projectName);
 
     // Seçilen projelerin tüm serilerini topla
@@ -626,12 +566,10 @@ function App() {
       return { data: [], projectNames: seriesNames, projectColors };
     }
 
-    // Zaman içinde tüm taramaları, tarih+saat bazlı noktalara dönüştür
     const sortedScans = [...allScans].sort(
       (a, b) => new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime()
     );
 
-    // Aynı zaman damgasına sahip çoklu taramalar için birleştirme yap
     const dataMap = new Map<string, Record<string, string | number | null>>();
 
     sortedScans.forEach((scan) => {
@@ -639,7 +577,7 @@ function App() {
       if (!seriesKey) return;
 
       const d = new Date(scan.modifiedAt);
-      const key = d.toISOString(); // benzersiz zaman damgası
+      const key = d.toISOString();
 
       if (!dataMap.has(key)) {
         const entry: Record<string, string | number | null> = {
@@ -651,7 +589,6 @@ function App() {
             minute: '2-digit',
           }),
         };
-        // Her seri için başlangıçta null ver (sadece veri olan seriler tooltip'te görünsün)
         seriesNames.forEach((name) => {
           entry[name] = null;
         });
@@ -680,31 +617,7 @@ function App() {
       return { data: [], seriesNames: [] as string[] };
     }
 
-    const getSeriesKey = (scan: ScanSummary): string | null => {
-      if (!scan.projectName) return null;
-      const proj = scan.projectName;
-      const img = scan.imageName;
-      if (!img) return proj;
-
-      if (!separateVersions) {
-        return `${proj} - ${img}`;
-      }
-
-      const tag = scan.tag || '';
-      let envLabel: string | null = null;
-      if (tag.startsWith('prod-')) envLabel = 'prod';
-      else if (tag.startsWith('test-')) envLabel = 'test';
-
-      if (envLabel) {
-        return `${proj} - ${img} (${envLabel})`;
-      }
-
-      if (tag) {
-        return `${proj} - ${img}:${tag}`;
-            }
-
-      return `${proj} - ${img}`;
-    };
+    const getSeriesKey = (scan: ScanSummary) => getTimelineSeriesKey(scan, separateVersions);
 
     const seriesNameSet = new Set<string>();
     projectScans.forEach((s) => {
@@ -713,7 +626,6 @@ function App() {
     });
     const seriesNames = Array.from(seriesNameSet);
 
-    // Zaman içinde bu projeye ait tüm taramaları noktaya dönüştür
     const sortedScans = [...projectScans].sort(
       (a, b) => new Date(a.modifiedAt).getTime() - new Date(b.modifiedAt).getTime()
     );
@@ -737,7 +649,6 @@ function App() {
             minute: '2-digit',
           }),
         };
-        // Başlangıçta tüm seriler için null verelim; sadece o anda taraması olan seriler çizilsin
         seriesNames.forEach((name) => {
           entry[name] = null;
         });
@@ -760,190 +671,6 @@ function App() {
     const latestMap = buildProjectImageLatestScan(allScans);
     return aggregateProjectStats(latestMap);
   }, [allScans]);
-
-  // Karşılaştırma Sayfası
-  if (showComparisonPage) {
-    return (
-      <div className="min-h-screen bg-catppuccin-base text-catppuccin-text">
-        <header className="border-b border-catppuccin-surface0 bg-catppuccin-mantle/70 backdrop-blur">
-          <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 text-sm">
-                <button
-                  onClick={() => {
-                    setCurrentPage('dashboard');
-                    setSelectedProject(null);
-                    setShowComparisonPage(false);
-                    setComparisonData(null);
-                    setSelectedScan1('');
-                    setSelectedScan2('');
-                  }}
-                  className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
-                >
-                  Ana Sayfa
-                </button>
-                <span className="text-catppuccin-overlay1">/</span>
-                <span className="px-3 py-1.5 rounded bg-catppuccin-teal/10 text-catppuccin-teal font-semibold">
-                  Scan Karşılaştırma
-                </span>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        <main className="mx-auto max-w-6xl px-4 py-6 space-y-6">
-          {/* Scan Selection */}
-          <section className="bg-catppuccin-mantle/60 border border-catppuccin-surface0 rounded-xl p-6">
-            <h2 className="text-xl font-semibold text-catppuccin-text mb-4">Tarama Seçimi</h2>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-catppuccin-text mb-2">
-                  Scan 1 (İlk Scan / Eski)
-                </label>
-                <select
-                  value={selectedScan1}
-                  onChange={(e) => {
-                    setSelectedScan1(e.target.value);
-                    setComparisonError(null);
-                    setComparisonData(null);
-                  }}
-                  className="w-full px-3 py-2 bg-catppuccin-base border border-catppuccin-surface0 rounded text-catppuccin-text"
-                >
-                  <option value="">Scan seçin...</option>
-                  {allScans.map((scan) => (
-                    <option key={scan.filename} value={scan.filename}>
-                      {scan.imageName
-                         ? `${scan.imageName}${scan.tag ? ':' + scan.tag : ''}` 
-                        : (scan.artifactName || scan.filename)
-                      } - {new Date(scan.modifiedAt).toLocaleString()}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-catppuccin-text mb-2">
-                  Scan 2 (İkinci Scan / Yeni)
-                </label>
-                <select
-                  value={selectedScan2}
-                  onChange={(e) => {
-                    setSelectedScan2(e.target.value);
-                    setComparisonError(null);
-                    setComparisonData(null);
-                  }}
-                  className="w-full px-3 py-2 bg-catppuccin-base border border-catppuccin-surface0 rounded text-catppuccin-text"
-                >
-                  <option value="">Scan seçin...</option>
-                  {allScans
-                    .filter(scan => scan.filename !== selectedScan1)
-                    .map((scan) => (
-                    <option key={scan.filename} value={scan.filename}>
-                      {scan.imageName
-                         ? `${scan.imageName}${scan.tag ? ':' + scan.tag : ''}` 
-                        : (scan.artifactName || scan.filename)
-                      } - {new Date(scan.modifiedAt).toLocaleString()}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <button
-                onClick={compareScans}
-                disabled={!selectedScan1 || !selectedScan2 || comparisonLoading}
-                className="w-full px-4 py-2 bg-catppuccin-blue text-catppuccin-base rounded hover:bg-catppuccin-sapphire disabled:opacity-50 disabled:cursor-not-allowed font-medium"
-              >
-                {comparisonLoading ? 'Karşılaştırılıyor...' : 'Karşılaştır'}
-              </button>
-              {comparisonError && (
-                <div className="mt-4 p-4 bg-catppuccin-red/20 border border-catppuccin-red/30 rounded-lg">
-                  <p className="text-sm text-catppuccin-red font-medium">Hata:</p>
-                  <p className="text-xs text-catppuccin-red/80 mt-1">{comparisonError}</p>
-                </div>
-              )}
-            </div>
-          </section>
-
-          {/* Comparison Results */}
-          {comparisonData && (
-            <section className="space-y-6">
-              {/* Summary Cards */}
-              <div className="grid grid-cols-4 gap-4">
-                <div className="bg-catppuccin-green/20 border border-catppuccin-green/30 rounded-lg p-4">
-                  <div className="text-2xl font-bold text-catppuccin-green">+{comparisonData.summary.added}</div>
-                  <div className="text-xs text-catppuccin-overlay1 mt-1">Yeni Eklenen</div>
-                </div>
-                <div className="bg-catppuccin-red/20 border border-catppuccin-red/30 rounded-lg p-4">
-                  <div className="text-2xl font-bold text-catppuccin-red">-{comparisonData.summary.removed}</div>
-                  <div className="text-xs text-catppuccin-overlay1 mt-1">Kapatılan</div>
-                </div>
-                <div className="bg-catppuccin-yellow/20 border border-catppuccin-yellow/30 rounded-lg p-4">
-                  <div className="text-2xl font-bold text-catppuccin-yellow">~{comparisonData.summary.changed}</div>
-                  <div className="text-xs text-catppuccin-overlay1 mt-1">Değişen</div>
-                </div>
-                <div className="bg-catppuccin-surface0 border border-catppuccin-surface1 rounded-lg p-4">
-                  <div className="text-2xl font-bold text-catppuccin-text">={comparisonData.summary.unchanged}</div>
-                  <div className="text-xs text-catppuccin-overlay1 mt-1">Değişmeyen</div>
-                </div>
-              </div>
-
-              {/* Diff/Meld Style View - Sağ Sol Karşılaştırma */}
-              <div className="bg-catppuccin-mantle/60 border border-catppuccin-surface0 rounded-xl p-6">
-                <h2 className="text-xl font-semibold text-catppuccin-text mb-4">Karşılaştırma Detayları (Diff/Meld Görünümü)</h2>
-                <div className="grid grid-cols-2 gap-4">
-                  {/* Left: Scan 1 (Removed - Red) */}
-                  <div className="border border-catppuccin-red/30 rounded-lg p-4 bg-catppuccin-red/5">
-                    <div className="text-sm font-semibold text-catppuccin-red mb-3">
-                      Scan 1 - Kaldırılanlar ({comparisonData.summary.removed})
-                    </div>
-                    <div className="text-xs text-catppuccin-overlay1 mb-2">
-                      {comparisonData.scan1.artifactName} - {new Date(comparisonData.scan1.scanDate).toLocaleString()}
-                    </div>
-                    <div className="space-y-2 max-h-96 overflow-y-auto">
-                      {(comparisonData.removed || []).map((vuln, idx) => (
-                        <div key={idx} className="bg-catppuccin-red/10 border-l-4 border-catppuccin-red p-2 rounded">
-                          <div className="text-xs font-mono text-catppuccin-teal">{vuln.VulnerabilityID}</div>
-                          <div className="text-xs text-catppuccin-text mt-1">{vuln.Title || vuln.VulnerabilityID}</div>
-                          <div className="text-xs text-catppuccin-overlay1 mt-1">
-                            {vuln.PkgName} {vuln.InstalledVersion}
-                          </div>
-                        </div>
-                      ))}
-                      {(!comparisonData.removed || comparisonData.removed.length === 0) && (
-                        <div className="text-xs text-catppuccin-overlay1 text-center py-4">Kaldırılan vulnerability yok</div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Right: Scan 2 (Added - Green) */}
-                  <div className="border border-catppuccin-green/30 rounded-lg p-4 bg-catppuccin-green/5">
-                    <div className="text-sm font-semibold text-catppuccin-green mb-3">
-                      Scan 2 - Yeni Eklenenler ({comparisonData.summary.added})
-                    </div>
-                    <div className="text-xs text-catppuccin-overlay1 mb-2">
-                      {comparisonData.scan2.artifactName} - {new Date(comparisonData.scan2.scanDate).toLocaleString()}
-                    </div>
-                    <div className="space-y-2 max-h-96 overflow-y-auto">
-                      {(comparisonData.added || []).map((vuln, idx) => (
-                        <div key={idx} className="bg-catppuccin-green/10 border-l-4 border-catppuccin-green p-2 rounded">
-                          <div className="text-xs font-mono text-catppuccin-teal">{vuln.VulnerabilityID}</div>
-                          <div className="text-xs text-catppuccin-text mt-1">{vuln.Title || vuln.VulnerabilityID}</div>
-                          <div className="text-xs text-catppuccin-overlay1 mt-1">
-                            {vuln.PkgName} {vuln.InstalledVersion}
-                          </div>
-                        </div>
-                      ))}
-                      {(!comparisonData.added || comparisonData.added.length === 0) && (
-                        <div className="text-xs text-catppuccin-overlay1 text-center py-4">Yeni eklenen vulnerability yok</div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-          )}
-        </main>
-      </div>
-    );
-  }
 
   // Show loading or project detail page
   if (currentPage === 'project-detail') {
@@ -1015,14 +742,6 @@ function App() {
             </div>
             <div className="flex items-center gap-3">
               <button
-                onClick={handleRefresh}
-                disabled={refreshing}
-                className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium disabled:opacity-50"
-                title="Tarama verilerini yenile"
-              >
-                {refreshing ? '⟳ Yenileniyor...' : '⟳ Yenile'}
-              </button>
-              <button
                 onClick={() => {
                   setCurrentPage('project-comparison');
                   setSelectedScan1('');
@@ -1034,7 +753,7 @@ function App() {
               >
                 Karşılaştırma
               </button>
-              <span className="text-xs text-catppuccin-overlay1">Prototype UI</span>
+              <span className="text-xs text-catppuccin-overlay1">DockerScan</span>
             </div>
           </div>
         </header>
@@ -1166,7 +885,7 @@ function App() {
                 {projectDetails.images.map((image) => {
                   const isExpanded = expandedImages.has(image.imageName);
                   const grade = image.grade;
-                  const color = gradeColor(image.grade);
+                  const color = gradeColor(grade);
                   const toggleExpand = (e?: React.MouseEvent) => {
                     e?.stopPropagation();
                     setExpandedImages((prev) => {
@@ -1185,7 +904,15 @@ function App() {
                       <div
                         role="button"
                         tabIndex={0}
-                        className={`border rounded-lg p-4 cursor-pointer hover:opacity-90 transition-all ${
+                        onClick={toggleExpand}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleExpand();
+                          }
+                        }}
+                        aria-expanded={isExpanded}
+                        className={`border rounded-lg p-4 cursor-pointer hover:opacity-90 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-catppuccin-blue ${
                           color === 'catppuccin-green'
                             ? 'border-catppuccin-green bg-catppuccin-green/10'
                             : color === 'catppuccin-blue'
@@ -1194,13 +921,6 @@ function App() {
                                 ? 'border-catppuccin-yellow bg-catppuccin-yellow/10'
                                 : 'border-catppuccin-red bg-catppuccin-red/10'
                         }`}
-                        onClick={toggleExpand}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            toggleExpand();
-                          }
-                        }}
                       >
                         <div className="flex items-center justify-between mb-3">
                           <div className="flex items-center gap-3">
@@ -1258,12 +978,15 @@ function App() {
                             </div>
                           </div>
                         </div>
-                        <button
-                          onClick={toggleExpand}
-                          className="text-xs px-3 py-1 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 text-catppuccin-subtext0 transition-colors"
-                        >
-                          {isExpanded ? 'Tarama Geçmişini Gizle ↑' : 'Tarama Geçmişini Göster ↓'}
-                        </button>
+                        <div className="flex items-center gap-1 text-xs text-catppuccin-subtext0 select-none">
+                          <span>{isExpanded ? 'Tarama Geçmişini Gizle' : 'Tarama Geçmişini Göster'}</span>
+                          <span
+                            className={`inline-block transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                            aria-hidden="true"
+                          >
+                            ▾
+                          </span>
+                        </div>
                       </div>
 
                       {isExpanded && (
@@ -1293,7 +1016,6 @@ function App() {
                                   <div
                                     role="button"
                                     tabIndex={0}
-                                    className="border border-catppuccin-surface0 rounded-lg p-3 bg-catppuccin-base/60 cursor-pointer hover:bg-catppuccin-base/80 transition-colors"
                                     onClick={toggleScanExpand}
                                     onKeyDown={(e) => {
                                       if (e.key === 'Enter' || e.key === ' ') {
@@ -1301,6 +1023,8 @@ function App() {
                                         toggleScanExpand();
                                       }
                                     }}
+                                    aria-expanded={isScanExpanded}
+                                    className="border border-catppuccin-surface0 rounded-lg p-3 bg-catppuccin-base/60 hover:bg-catppuccin-base/80 transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-catppuccin-blue"
                                   >
                                     <div className="flex items-center justify-between">
                                       <div className="flex items-center gap-3">
@@ -1320,7 +1044,7 @@ function App() {
                                         <div>
                                           <p className="text-sm font-semibold text-catppuccin-text">
                                             {scan.imageName
-                                               ? `${scan.imageName}${scan.tag ? ':' + scan.tag : ''}` 
+                                               ? `${scan.imageName}${scan.tag ? ':' + scan.tag : ''}`
                                               : (scan.artifactName || scan.filename)
                                             }
                                           </p>
@@ -1374,12 +1098,12 @@ function App() {
                                             </span>
                                           )}
                                         </div>
-                                        <button
-                                          onClick={toggleScanExpand}
-                                          className="text-xs px-2 py-1 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 text-catppuccin-subtext0"
+                                        <span
+                                          className={`inline-block text-catppuccin-subtext0 transition-transform select-none ${isScanExpanded ? 'rotate-180' : ''}`}
+                                          aria-hidden="true"
                                         >
-                                          {isScanExpanded ? '↑' : '↓'}
-                                        </button>
+                                          ▾
+                                        </span>
                                       </div>
                                     </div>
                                   </div>
@@ -1516,7 +1240,6 @@ function App() {
                     setCurrentPage('dashboard');
                     setSelectedProject(null);
                     setProjectDetails(null);
-                    setShowComparisonPage(false);
                     setComparisonData(null);
                     setSelectedScan1('');
                     setSelectedScan2('');
@@ -1555,7 +1278,7 @@ function App() {
                 </span>
               </div>
             </div>
-            <span className="text-xs text-catppuccin-overlay1">Prototype UI</span>
+            <span className="text-xs text-catppuccin-overlay1">DockerScan</span>
           </div>
         </header>
 
@@ -1581,7 +1304,7 @@ function App() {
                   {projectScans.map((scan) => (
                     <option key={scan.filename} value={scan.filename}>
                       {scan.imageName
-                         ? `${scan.imageName}${scan.tag ? ':' + scan.tag : ''}` 
+                         ? `${scan.imageName}${scan.tag ? ':' + scan.tag : ''}`
                         : (scan.artifactName || scan.filename)
                       } - {new Date(scan.modifiedAt).toLocaleString()}
                     </option>
@@ -1607,7 +1330,7 @@ function App() {
                     .map((scan) => (
                     <option key={scan.filename} value={scan.filename}>
                         {scan.imageName
-                         ? `${scan.imageName}${scan.tag ? ':' + scan.tag : ''}` 
+                         ? `${scan.imageName}${scan.tag ? ':' + scan.tag : ''}`
                           : (scan.artifactName || scan.filename)
                         } - {new Date(scan.modifiedAt).toLocaleString()}
                     </option>
@@ -1653,7 +1376,7 @@ function App() {
                 </div>
               </div>
 
-              {/* Diff/Meld Style View - Sağ Sol Karşılaştırma */}
+              {/* Diff/Meld Style View */}
               <div className="bg-catppuccin-mantle/60 border border-catppuccin-surface0 rounded-xl p-6">
                 <h2 className="text-xl font-semibold text-catppuccin-text mb-4">Karşılaştırma Detayları (Diff/Meld Görünümü)</h2>
                 <div className="grid grid-cols-2 gap-4">
@@ -1726,12 +1449,10 @@ function App() {
         setSearchQuery={setSearchQuery}
         onSelectProject={(projectName) => {
           setSelectedProject(projectName);
-                        setCurrentPage('project-detail');
-                      }}
+          setCurrentPage('project-detail');
+        }}
         goDashboard={() => setCurrentPage('dashboard')}
         apiBase={API_BASE}
-        onRefresh={handleRefresh}
-        refreshing={refreshing}
       />
     );
   }
@@ -1750,7 +1471,7 @@ function App() {
                 ← Ana Sayfa
               </button>
             </div>
-            <span className="text-xs text-catppuccin-overlay1">Prototype UI</span>
+            <span className="text-xs text-catppuccin-overlay1">DockerScan</span>
           </div>
         </header>
 
@@ -1800,10 +1521,8 @@ function App() {
       onGoProjects={() => setCurrentPage('projects')}
       onOpenProject={(projectName) => {
         setSelectedProject(projectName);
-                    setCurrentPage('project-detail');
-                  }}
-      onRefresh={handleRefresh}
-      refreshing={refreshing}
+        setCurrentPage('project-detail');
+      }}
     />
   );
 }

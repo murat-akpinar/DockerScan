@@ -25,6 +25,8 @@ const (
 	mimeApplicationJSON      = "application/json"
 	defaultExportDir         = "/app/export"
 	indexRebuildIntervalSec  = 60
+	cleanupIntervalHours     = 24
+	cleanupRetentionDays     = 30
 	errReadExportDirectory   = "failed to read export directory"
 	errEncodeResponse        = "failed to encode response"
 	errInvalidFilename       = "invalid filename"
@@ -95,7 +97,6 @@ type ImageSummary struct {
 	Scans         []ScanSummary  `json:"scans,omitempty"` // All scans for this image
 }
 
-
 // Trivy JSON structures
 type TrivyReport struct {
 	SchemaVersion int      `json:"SchemaVersion"`
@@ -128,11 +129,11 @@ type Vulnerability struct {
 
 // Comparison structures
 type ComparisonResult struct {
-	Scan1    ScanComparisonInfo   `json:"scan1"`
-	Scan2    ScanComparisonInfo   `json:"scan2"`
-	Summary  ComparisonSummary    `json:"summary"`
-	Added    []Vulnerability      `json:"added"`
-	Removed  []Vulnerability      `json:"removed"`
+	Scan1    ScanComparisonInfo     `json:"scan1"`
+	Scan2    ScanComparisonInfo     `json:"scan2"`
+	Summary  ComparisonSummary      `json:"summary"`
+	Added    []Vulnerability        `json:"added"`
+	Removed  []Vulnerability        `json:"removed"`
 	Changed  []ChangedVulnerability `json:"changed"`
 }
 
@@ -151,11 +152,11 @@ type ComparisonSummary struct {
 }
 
 type ChangedVulnerability struct {
-	VulnerabilityID   string                 `json:"VulnerabilityID"`
-	PkgName           string                 `json:"PkgName"`
-	InstalledVersion  string                 `json:"InstalledVersion"`
-	Changes           map[string]FieldChange `json:"changes"`
-	Current           Vulnerability          `json:"current"`
+	VulnerabilityID  string                 `json:"VulnerabilityID"`
+	PkgName          string                 `json:"PkgName"`
+	InstalledVersion string                 `json:"InstalledVersion"`
+	Changes          map[string]FieldChange `json:"changes"`
+	Current          Vulnerability          `json:"current"`
 }
 
 type FieldChange struct {
@@ -165,7 +166,7 @@ type FieldChange struct {
 
 // CVE Search structures
 type CVESearchResult struct {
-	CVEID    string            `json:"cveId"`
+	CVEID    string             `json:"cveId"`
 	Projects []CVEProjectResult `json:"projects"`
 }
 
@@ -175,9 +176,9 @@ type CVEProjectResult struct {
 }
 
 type CVEImageResult struct {
-	ImageName string      `json:"imageName"`
-	Tag       string      `json:"tag,omitempty"`
-	ScanCount int         `json:"scanCount"`
+	ImageName  string      `json:"imageName"`
+	Tag        string      `json:"tag,omitempty"`
+	ScanCount  int         `json:"scanCount"`
 	LatestScan ScanSummary `json:"latestScan"`
 }
 
@@ -212,7 +213,7 @@ func main() {
 
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   allowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "OPTIONS"},
 		AllowedHeaders:   []string{"*"},
 		ExposedHeaders:   []string{"*"},
 		AllowCredentials: false,
@@ -240,11 +241,32 @@ func main() {
 		}
 	}()
 
+	// Periodically clean up old export files (every 24 hours).
+	go func() {
+		cleanupOldExports(exportDir)
+		ticker := time.NewTicker(cleanupIntervalHours * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			cleanupOldExports(exportDir)
+		}
+	}()
+
 	// Root info
 	r.Get("/", handleRoot)
 
 	// Simple health check
 	r.Get("/health", handleHealth)
+
+	// Force an immediate index rebuild (called by CI/CD after a scan completes)
+	r.Post("/api/reload", func(w http.ResponseWriter, r *http.Request) {
+		if err := rebuildIndex(exportDir); err != nil {
+			http.Error(w, "index rebuild failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set(headerContentType, mimeApplicationJSON)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, `{"status":"ok","message":"index rebuilt"}`)
+	})
 
 	// List all scans with vulnerability summaries
 	r.Get("/api/scans", func(w http.ResponseWriter, r *http.Request) {
@@ -342,7 +364,7 @@ func main() {
 		// Join path and clean it to prevent directory traversal
 		filePath := filepath.Join(exportDir, filename)
 		filePath = filepath.Clean(filePath)
-		
+
 		// Ensure the file is within exportDir
 		if !strings.HasPrefix(filePath, filepath.Clean(exportDir)+string(os.PathSeparator)) && filePath != filepath.Clean(exportDir) {
 			http.Error(w, errInvalidFilename, http.StatusBadRequest)
@@ -439,6 +461,7 @@ func main() {
 					}
 				}
 				scanSummary.TotalVulns = total
+				scanSummary.Grade = computeGrade(scanSummary.SeverityCount)
 			}
 
 			// Fallback to filename parsing if ArtifactName parsing failed
@@ -472,7 +495,7 @@ func main() {
 	r.Get("/api/compare", func(w http.ResponseWriter, r *http.Request) {
 		scan1Filename := r.URL.Query().Get("scan1")
 		scan2Filename := r.URL.Query().Get("scan2")
-		
+
 		if scan1Filename == "" || scan2Filename == "" {
 			http.Error(w, "scan1 and scan2 parameters are required", http.StatusBadRequest)
 			return
@@ -491,7 +514,7 @@ func main() {
 
 		scan1Path := filepath.Join(exportDir, scan1Filename)
 		scan2Path := filepath.Join(exportDir, scan2Filename)
-		
+
 		scan1Path = filepath.Clean(scan1Path)
 		scan2Path = filepath.Clean(scan2Path)
 
@@ -619,6 +642,7 @@ func main() {
 				}
 			}
 			scanSummary.TotalVulns = total
+			scanSummary.Grade = computeGrade(scanSummary.SeverityCount)
 
 			// Add to results map
 			if projectImageScans[projectName] == nil {
@@ -642,9 +666,9 @@ func main() {
 				}
 
 				imageResults = append(imageResults, CVEImageResult{
-					ImageName: imageName,
-					Tag:       latestScan.Tag,
-					ScanCount: len(scans),
+					ImageName:  imageName,
+					Tag:        latestScan.Tag,
+					ScanCount:  len(scans),
 					LatestScan: latestScan,
 				})
 			}
@@ -729,16 +753,28 @@ func main() {
 			})
 
 			worstGrade := "A"
+			goodCount := 0
 			for _, ig := range imageGrades {
 				if gradeOrder(ig.Grade) > gradeOrder(worstGrade) {
 					worstGrade = ig.Grade
 				}
+				if ig.Grade == "A" || ig.Grade == "B" {
+					goodCount++
+				}
+			}
+
+			// Çoğunluk imaj iyi (A/B) ise proje notunu bir kademe yumuşat.
+			// Böylece tek sorunlu imaj tüm projeyi aşağı çekmez; sorunlu
+			// imaj kendi notuyla listede görünmeye devam eder.
+			projectGrade := worstGrade
+			if goodCount > len(imageGrades)/2 {
+				projectGrade = softenGrade(worstGrade)
 			}
 
 			projectGrades = append(projectGrades, ProjectGrade{
 				ProjectName: p.ProjectName,
 				ImageCount:  len(p.Images),
-				Grade:       worstGrade,
+				Grade:       projectGrade,
 				Images:      imageGrades,
 			})
 		}
@@ -761,17 +797,6 @@ func main() {
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			http.Error(w, errEncodeResponse, http.StatusInternalServerError)
 		}
-	})
-
-	// Force an immediate index rebuild (called by CI/CD after a scan completes)
-	r.Post("/api/reload", func(w http.ResponseWriter, r *http.Request) {
-		if err := rebuildIndex(exportDir); err != nil {
-			http.Error(w, "index rebuild failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set(headerContentType, mimeApplicationJSON)
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, `{"status":"ok","message":"index rebuilt"}`)
 	})
 
 	port := os.Getenv("PORT")
@@ -1044,9 +1069,9 @@ func compareScans(scan1Path, scan2Path, scan1Filename, scan2Filename string) (Co
 			Changed:   len(changed),
 			Unchanged: len(unchanged),
 		},
-		Added:    added,
-		Removed:  removed,
-		Changed:  changed,
+		Added:   added,
+		Removed: removed,
+		Changed: changed,
 	}, nil
 }
 
@@ -1061,7 +1086,7 @@ func compareScans(scan1Path, scan2Path, scan1Filename, scan2Filename string) (Co
 func extractProjectAndImageFromPath(relPath, exportDir string) (projectName, imageName string) {
 	// Normalize path separators
 	relPath = filepath.ToSlash(relPath)
-	
+
 	// Remove .json extension
 	basePath := strings.TrimSuffix(relPath, ".json")
 	if basePath == "" {
@@ -1075,10 +1100,10 @@ func extractProjectAndImageFromPath(relPath, exportDir string) (projectName, ima
 		// Also supports: {project-name}/tags/{tag-name} or {project-name}/manifests/{tag-name}
 		dir = strings.TrimSuffix(dir, "/")
 		dir = strings.TrimSuffix(dir, string(os.PathSeparator))
-		
+
 		// Split directory path to handle nested structures like "odenek-talep/tags"
 		pathParts := strings.Split(dir, "/")
-		
+
 		// If the last part is "tags" or "manifests", skip it and use the parent as project name
 		// Example: "odenek-talep/tags" -> project: "odenek-talep"
 		if len(pathParts) > 1 && (pathParts[len(pathParts)-1] == "tags" || pathParts[len(pathParts)-1] == "manifests") {
@@ -1086,7 +1111,7 @@ func extractProjectAndImageFromPath(relPath, exportDir string) (projectName, ima
 		} else {
 			projectName = dir
 		}
-		
+
 		// Remove timestamp from filename if present
 		imageName = removeTimestampFromFilename(fileName)
 		return projectName, imageName
@@ -1094,7 +1119,7 @@ func extractProjectAndImageFromPath(relPath, exportDir string) (projectName, ima
 
 	// Flat structure: {project-name}-{image-name} or {project-name}-{image-name}-{timestamp}
 	baseName := fileName
-	
+
 	// Remove timestamp if present
 	baseName = removeTimestampFromFilename(baseName)
 
@@ -1183,25 +1208,25 @@ func compareVersionTags(tag1, tag2 string) int {
 	if tag2 == "" {
 		return 1 // Empty tag is considered older
 	}
-	
+
 	// Remove "v" prefix if present
 	tag1 = strings.TrimPrefix(tag1, "v")
 	tag2 = strings.TrimPrefix(tag2, "v")
-	
+
 	// Split by dots to compare numeric parts
 	parts1 := strings.Split(tag1, ".")
 	parts2 := strings.Split(tag2, ".")
-	
+
 	maxLen := len(parts1)
 	if len(parts2) > maxLen {
 		maxLen = len(parts2)
 	}
-	
+
 	// Compare each part numerically
 	for i := 0; i < maxLen; i++ {
 		var num1, num2 int64
 		var err1, err2 error
-		
+
 		if i < len(parts1) {
 			// Try to parse as number, if fails treat as string
 			num1, err1 = strconv.ParseInt(parts1[i], 10, 64)
@@ -1209,7 +1234,7 @@ func compareVersionTags(tag1, tag2 string) int {
 		if i < len(parts2) {
 			num2, err2 = strconv.ParseInt(parts2[i], 10, 64)
 		}
-		
+
 		// Both are numbers
 		if err1 == nil && err2 == nil {
 			if num1 < num2 {
@@ -1234,14 +1259,14 @@ func compareVersionTags(tag1, tag2 string) int {
 			}
 		}
 	}
-	
+
 	return 0
 }
 
 // extractProjectImageTagFromArtifactName extracts project, image, and tag from ArtifactName
-// Format: {project-name}-{image-name}:{tag}
-// Example: "dockscan-backend:latest" -> project: "dockscan", image: "backend", tag: "latest"
-// Example: "my-service-api:v1.0.0" -> project: "my-service", image: "api", tag: "v1.0.0"
+// Format: {project-name}_{image-name}:{tag}
+// Example: "dockscan_backend:latest" -> project: "dockscan", image: "backend", tag: "latest"
+// Example: "my-service_api:v1.0.0" -> project: "my-service", image: "api", tag: "v1.0.0"
 // Returns empty strings if parsing fails
 func extractProjectImageTagFromArtifactName(artifactName string) (projectName, imageName, tag string) {
 	if artifactName == "" {
@@ -1250,14 +1275,14 @@ func extractProjectImageTagFromArtifactName(artifactName string) (projectName, i
 
 	// Split by colon to get tag.
 	// ArtifactName genelde şu formatlarda gelir:
-	//  - "dockscan-backend:latest"
-	//  - "yournexushost:8090/repository/my-repo/acme-app_frontend:test-v1.0"
+	//  - "dockscan_backend:latest"
+	//  - "yournexushost:8090/repository/my-repo/myapp_frontend:test-v1.0"
 	// Bizim için önemli olan kısım, registry ve path'ten sonraki image adı ve tag'dir.
 	parts := strings.Split(artifactName, ":")
 	var namePart string
 	if len(parts) == 2 {
-		namePart = parts[0] // örn: "yournexushost:8090/repository/my-repo/acme-app_frontend"
-		tag = parts[1]      // örn: "test-v1.0"
+		namePart = parts[0]
+		tag = parts[1]
 	} else if len(parts) == 1 {
 		namePart = parts[0]
 		tag = "" // No tag specified
@@ -1272,10 +1297,8 @@ func extractProjectImageTagFromArtifactName(artifactName string) (projectName, i
 		}
 	}
 
-	// Bazı registry formatlarında (örn: "yournexushost:8090/repository/my-repo/acme-app_frontend")
+	// Registry formatlarında (örn: "yournexushost:8090/repository/my-repo/myapp_frontend")
 	// ArtifactName, tam image path'ini içerir. Bizim için önemli olan son segmenttir.
-	// Örnek:
-	//  - "yournexushost:8090/repository/my-repo/acme-app_frontend" -> "acme-app_frontend"
 	if strings.Contains(namePart, "/") {
 		parts := strings.Split(namePart, "/")
 		namePart = parts[len(parts)-1]
@@ -1284,7 +1307,7 @@ func extractProjectImageTagFromArtifactName(artifactName string) (projectName, i
 	// Önce projeyi ve imajı ayırmak için öncelikli olarak alt çizgi (_) kullan.
 	// Örnek:
 	//   "hafizlik-takip_backend"  -> project: "hafizlik-takip", image: "backend"
-	//   "acme-app_frontend"  -> project: "acme-app",   image: "frontend"
+	//   "myapp_frontend"          -> project: "myapp",          image: "frontend"
 	underscore := strings.LastIndex(namePart, "_")
 	if underscore > 0 && underscore < len(namePart)-1 {
 		projectName = namePart[:underscore]
@@ -1309,34 +1332,21 @@ func extractProjectImageTagFromArtifactName(artifactName string) (projectName, i
 	for _, suf := range commonSuffixes {
 		suffix := "-" + suf
 		if strings.HasSuffix(namePart, suffix) && len(namePart) > len(suffix) {
-			// Örn: "superapp-backend-api" -> project: "superapp", image: "backend-api"
 			projectName = strings.TrimSuffix(namePart, suffix)
-			imageName = suf // suffix'in kendisi imaj adı olarak kullanılır ("backend", "frontend", "backend-api" vb.)
+			imageName = suf
 			return projectName, imageName, tag
 		}
 	}
 
-	// Hiçbir özel kural uymuyorsa, son tireye göre böl.
-	// Daha önce burada son tireye göre genel bir bölme yapılıyordu:
-	//   "dockscan-backend" -> project: "dockscan", image: "backend"
-	// Ancak artık backend/frontend/api gibi bilinen suffix'ler zaten yukarıdaki
-	// commonSuffixes listesi ile yakalandığı için, geriye kalan isimler tekil
-	// projeler olarak ele alınır.
-	// Örnekler (tek imajlı monolith projeler):
+	// Hiçbir özel kural uymuyorsa, tek imajlı monolith projeler olarak ele al.
+	// Örnekler:
 	//   "goruntulu-fetvalar" -> project: "goruntulu-fetvalar", image: "goruntulu-fetvalar"
-	//   "avrasya-fetva"      -> project: "avrasya-fetva",      image: "avrasya-fetva"
+	//   "ajanda"            -> project: "ajanda",             image: "ajanda"
 	lastDash := strings.LastIndex(namePart, "-")
 	if lastDash == -1 || lastDash == 0 || lastDash == len(namePart)-1 {
-		// Tire yoksa veya başta/sonda ise, isim tek parça kabul edilir.
-		// Örnek: "wordpress:6.6.2" veya "ajanda:prod-v1.0"
 		return namePart, namePart, tag
 	}
 
-	// Eski davranış: son tireye göre bölme
-	// Bu genel kural, bazı projelerde istenmeyen bölünmelere sebep oluyordu
-	// (örn. "goruntulu-fetvalar" -> "goruntulu" + "fetvalar").
-	// Bu nedenle, eğer yukarıdaki özel suffix kurallarına girmiyorsa
-	// projeyi tek parça olarak ele alıyoruz.
 	return namePart, namePart, tag
 }
 
@@ -1346,11 +1356,6 @@ func extractProjectAndImage(filename string) (projectName, imageName string) {
 	return extractProjectAndImageFromPath(filename, "")
 }
 
-// rebuildIndex (ilk adım olarak) ileride kullanacağımız bellek içi index yapısını
-// oluşturmak için çağrılacak. Şu an için mevcut davranışı bozmayacak şekilde
-// sadece iskelet olarak tanımlanmıştır.
-// NOT: İlerleyen aşamada /api/scans ve /api/projects endpoint'leri bu index'ten
-// beslenecek şekilde güncellenecektir.
 func rebuildIndex(exportDir string) error {
 	jsonFiles, err := walkJSONFiles(exportDir)
 	if err != nil {
@@ -1510,27 +1515,138 @@ func rebuildIndex(exportDir string) error {
 	return nil
 }
 
-// computeGrade returns a letter grade based on CRITICAL and HIGH vulnerability counts
-// from the latest scan of an image.
-// A: 0 CRITICAL, 0 HIGH
-// B: 0 CRITICAL, ≥1 HIGH
-// C: 1–3 CRITICAL
-// D: 4–9 CRITICAL
-// F: ≥10 CRITICAL
+// computeGrade returns a letter grade based on CRITICAL, HIGH and MEDIUM vulnerability counts.
+// A: CRITICAL=0, HIGH≤2,  MEDIUM≤5
+// B: CRITICAL=0, HIGH≤5,  MEDIUM≤10
+// C: CRITICAL≤2, HIGH≤8,  MEDIUM≤15
+// D: CRITICAL≤9  (fails C thresholds)
+// F: CRITICAL≥10
 func computeGrade(severityCount map[string]int) string {
 	critical := severityCount["CRITICAL"]
 	high := severityCount["HIGH"]
+	medium := severityCount["MEDIUM"]
 	switch {
-	case critical == 0 && high == 0:
+	case critical == 0 && high <= 2 && medium <= 5:
 		return "A"
-	case critical == 0:
+	case critical == 0 && high <= 5 && medium <= 10:
 		return "B"
-	case critical <= 3:
+	case critical <= 2 && high <= 8 && medium <= 15:
 		return "C"
 	case critical <= 9:
 		return "D"
 	default:
 		return "F"
+	}
+}
+
+// exportFile pairs a scan file path with its modification time.
+type exportFile struct {
+	path    string
+	modTime time.Time
+}
+
+// collectJSONFiles returns the .json scan files directly under projectDir,
+// each with its modification time.
+func collectJSONFiles(projectDir string, dirEntries []os.DirEntry) []exportFile {
+	var files []exportFile
+	for _, de := range dirEntries {
+		if de.IsDir() || filepath.Ext(de.Name()) != ".json" {
+			continue
+		}
+		info, err := de.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, exportFile{
+			path:    filepath.Join(projectDir, de.Name()),
+			modTime: info.ModTime(),
+		})
+	}
+	return files
+}
+
+// newestFile returns the file with the most recent modification time.
+// files must be non-empty.
+func newestFile(files []exportFile) exportFile {
+	newest := files[0]
+	for _, f := range files[1:] {
+		if f.modTime.After(newest.modTime) {
+			newest = f
+		}
+	}
+	return newest
+}
+
+// cleanupProjectDir removes JSON scan files older than cutoff from projectDir,
+// always keeping the newest file. It returns the number of files deleted and kept.
+func cleanupProjectDir(projectDir string, cutoff time.Time) (deleted, kept int) {
+	dirEntries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return 0, 0
+	}
+
+	files := collectJSONFiles(projectDir, dirEntries)
+	if len(files) == 0 {
+		return 0, 0
+	}
+
+	newest := newestFile(files)
+	for _, f := range files {
+		if f.path == newest.path || !f.modTime.Before(cutoff) {
+			kept++
+			continue
+		}
+		if err := os.Remove(f.path); err != nil {
+			log.Printf("cleanup: failed to remove %s: %v", f.path, err)
+			kept++
+			continue
+		}
+		log.Printf("cleanup: removed %s", f.path)
+		deleted++
+	}
+	return deleted, kept
+}
+
+// cleanupOldExports removes scan files older than cleanupRetentionDays from each project
+// subdirectory under exportDir. At least one file (the newest) is always kept per directory,
+// regardless of its age.
+func cleanupOldExports(exportDir string) {
+	cutoff := time.Now().AddDate(0, 0, -cleanupRetentionDays)
+
+	entries, err := os.ReadDir(exportDir)
+	if err != nil {
+		log.Printf("cleanup: failed to read export dir: %v", err)
+		return
+	}
+
+	deleted := 0
+	kept := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		d, k := cleanupProjectDir(filepath.Join(exportDir, entry.Name()), cutoff)
+		deleted += d
+		kept += k
+	}
+
+	log.Printf("cleanup: done — %d removed, %d kept", deleted, kept)
+}
+
+// softenGrade returns the grade one tier better (less severe). A stays A.
+// F->D->C->B->A. Used to relax a project grade when most images are healthy.
+func softenGrade(grade string) string {
+	switch grade {
+	case "F":
+		return "D"
+	case "D":
+		return "C"
+	case "C":
+		return "B"
+	case "B":
+		return "A"
+	default:
+		return "A"
 	}
 }
 

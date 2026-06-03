@@ -76,6 +76,18 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
   onRefresh,
   refreshing,
 }) => {
+  const [activeSeries, setActiveSeries] = React.useState<string | null>(null);
+  const [hiddenSeries, setHiddenSeries] = React.useState<Set<string>>(new Set());
+
+  const toggleSeries = (name: string) => {
+    setHiddenSeries((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
   return (
     <div className="min-h-screen bg-catppuccin-base text-catppuccin-text">
       <header className="border-b border-catppuccin-surface0 bg-catppuccin-mantle/70 backdrop-blur">
@@ -103,7 +115,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
                 {refreshing ? '⟳ Yenileniyor...' : '⟳ Yenile'}
               </button>
             )}
-            <span className="text-xs text-catppuccin-overlay1">Prototype UI</span>
+            <span className="text-xs text-catppuccin-overlay1">DockerScan</span>
           </div>
         </div>
       </header>
@@ -255,7 +267,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
             </div>
             {unifiedTimelineData.data.length > 0 ? (
               <>
-                <ResponsiveContainer width="100%" height={300}>
+                <ResponsiveContainer width="100%" height={340}>
                   <LineChart data={unifiedTimelineData.data}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#313244" />
                     <XAxis
@@ -277,47 +289,74 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
                       }}
                     />
                     <Tooltip content={<TimelineTooltip />} />
-                    {unifiedTimelineData.projectNames.map((projectName, index) => (
-                      <Line
-                        key={projectName}
-                        type="monotone"
-                        dataKey={projectName}
-                        stroke={
-                          unifiedTimelineData.projectColors[
-                            index % unifiedTimelineData.projectColors.length
-                          ]
-                        }
-                        strokeWidth={2}
-                        dot={{
-                          fill:
-                            unifiedTimelineData.projectColors[
-                              index % unifiedTimelineData.projectColors.length
-                            ],
-                          r: 4,
-                        }}
-                        activeDot={{ r: 6 }}
-                        connectNulls
-                        name={projectName}
-                      />
-                    ))}
+                    {unifiedTimelineData.projectNames.map((projectName, index) => {
+                      const color =
+                        unifiedTimelineData.projectColors[
+                          index % unifiedTimelineData.projectColors.length
+                        ];
+                      if (hiddenSeries.has(projectName)) return null;
+                      const isActive = activeSeries === projectName;
+                      const dimmed = activeSeries !== null && !isActive;
+                      return (
+                        <Line
+                          key={projectName}
+                          type="monotone"
+                          dataKey={projectName}
+                          stroke={color}
+                          strokeWidth={isActive ? 3.5 : 2}
+                          strokeOpacity={dimmed ? 0.15 : 1}
+                          dot={dimmed ? false : { fill: color, r: isActive ? 4 : 3, strokeWidth: 0 }}
+                          activeDot={{ r: 6 }}
+                          connectNulls
+                          name={projectName}
+                          isAnimationActive={false}
+                        />
+                      );
+                    })}
                   </LineChart>
                 </ResponsiveContainer>
-                <div className="mt-3 flex flex-wrap gap-3 text-xs text-catppuccin-overlay1">
-                  {unifiedTimelineData.projectNames.map((projectName, index) => (
-                    <div key={projectName} className="flex items-center gap-2">
-                      <div
-                        className="w-3 h-3 rounded"
-                        style={{
-                          backgroundColor:
-                            unifiedTimelineData.projectColors[
-                              index % unifiedTimelineData.projectColors.length
-                            ],
-                        }}
-                      ></div>
-                      <span>{projectName}</span>
-                    </div>
-                  ))}
+                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                  {unifiedTimelineData.projectNames.map((projectName, index) => {
+                    const color =
+                      unifiedTimelineData.projectColors[
+                        index % unifiedTimelineData.projectColors.length
+                      ];
+                    const isHidden = hiddenSeries.has(projectName);
+                    const isActive = activeSeries === projectName;
+                    return (
+                      <button
+                        key={projectName}
+                        type="button"
+                        onMouseEnter={() => setActiveSeries(projectName)}
+                        onMouseLeave={() => setActiveSeries(null)}
+                        onClick={() => toggleSeries(projectName)}
+                        title={isHidden ? 'Göstermek için tıkla' : 'Gizlemek için tıkla'}
+                        className={`flex items-center gap-2 rounded px-2 py-1 border transition-all ${
+                          isActive
+                            ? 'border-catppuccin-surface2 bg-catppuccin-surface0/60'
+                            : 'border-transparent hover:bg-catppuccin-surface0/40'
+                        } ${isHidden ? 'opacity-40' : ''}`}
+                      >
+                        <span
+                          className="w-3 h-3 rounded shrink-0"
+                          style={{ backgroundColor: color }}
+                        ></span>
+                        <span
+                          className={
+                            isHidden
+                              ? 'line-through text-catppuccin-overlay0'
+                              : 'text-catppuccin-subtext0'
+                          }
+                        >
+                          {projectName}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
+                <p className="mt-2 text-[11px] text-catppuccin-overlay0">
+                  İpucu: Bir seriyi vurgulamak için açıklamadaki adın üzerine gelin; gizlemek/göstermek için tıklayın.
+                </p>
               </>
             ) : (
               <div className="flex items-center justify-center h-[300px] text-catppuccin-overlay1">

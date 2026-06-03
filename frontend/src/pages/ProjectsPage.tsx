@@ -175,7 +175,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 {refreshing ? '⟳ Yenileniyor...' : '⟳ Yenile'}
               </button>
             )}
-            <span className="text-xs text-catppuccin-overlay1">Prototype UI</span>
+            <span className="text-xs text-catppuccin-overlay1">DockerScan</span>
           </div>
         </div>
       </header>

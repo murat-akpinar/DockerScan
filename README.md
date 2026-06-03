@@ -20,10 +20,11 @@ Trivy güvenlik tarama sonuçlarını toplayıp görselleştiren web dashboard u
 - **Harf Notu Sistemi**: Her imaj için otomatik güvenlik notu (A–F) ve `/api/grades` REST endpoint'i
 - **Detaylı Vulnerability Listesi**: Her açık için ID, açıklama, fixed version ve detay linkleri
 - **CVE Arama**: Belirli bir CVE'yi hangi projelerde/imajlarda içerdiğini sorgulama
-- **Zaman Çizelgesi**: Taramaların zaman içindeki değişimini görselleştirme
+- **Zaman Çizelgesi**: İnteraktif legend ile taramaların zaman içindeki değişimini görselleştirme
 - **Genel Dashboard**: Tüm projelerin toplam istatistiklerini görüntüleme
 - **Detaylı Karşılaştırma**: İki tarama arasında hangi açıkların kapandığını/yeni eklendiğini gösteren diff görünümü
 - **Derin URL Routing**: `/projects/{projectName}` URL'leri doğrudan paylaşılabilir ve bookmarklanabilir
+- **Otomatik Temizlik**: 30 günden eski scan dosyaları otomatik silinir, her proje klasöründe en az bir dosya korunur
 
 ## Hızlı Başlangıç
 
@@ -36,8 +37,6 @@ Trivy güvenlik tarama sonuçlarını toplayıp görselleştiren web dashboard u
 1. `.env` dosyasını oluşturun:
 ```bash
 cp .example.env .env
-# EXPORT_DIR değerini mutlak path olarak ayarlayın, örn:
-# EXPORT_DIR=/home/user/dockscan/export
 ```
 
 2. Container'ları build edip başlatın:
@@ -46,8 +45,9 @@ docker compose up -d --build
 ```
 
 3. Dashboard'a erişin:
-- Dashboard: http://localhost:3017 (veya `.env` içindeki `FRONTEND_PORT`)
-- Backend API: nginx üzerinden `http://localhost:3017/api/...` ile erişilebilir
+- `http://localhost:3017` (veya `.env` içindeki `FRONTEND_PORT`)
+
+> Backend yalnızca container ağında erişilebilir; tüm API istekleri nginx üzerinden (`/api/...`) yönlendirilir. Dışarıya yalnızca `FRONTEND_PORT` açıktır.
 
 ## Trivy Tarama Sonuçlarını Ekleme
 
@@ -57,32 +57,52 @@ Trivy JSON raporlarını `export/` klasörüne koyun. Backend, dosya adından ve
 
 **Desteklenen Formatlar:**
 
-1. **Düz Yapı** (Flat):
+1. **Dizin Yapısı** (Önerilen):
    ```
-   export/{proje}-{imaj}.json
-   export/{proje}-{imaj}-{YYYYMMDD-HHMMSS}.json
-   ```
-   Örnek: `export/dockscan-backend-20251126-182000.json`
-
-2. **Dizin Yapısı** (Önerilen):
-   ```
-   export/{proje}/{imaj}.json
    export/{proje}/{imaj}-{YYYYMMDD-HHMMSS}.json
    ```
    Örnek: `export/dockscan/backend-20251126-182000.json`
 
+2. **Düz Yapı** (Flat):
+   ```
+   export/{proje}-{imaj}-{YYYYMMDD-HHMMSS}.json
+   ```
+   Örnek: `export/dockscan-backend-20251126-182000.json`
+
 3. **ArtifactName ile Otomatik Parse** (En Kolay):
    JSON dosyasının içindeki `ArtifactName` alanından otomatik parse edilir:
-   - `ArtifactName: "dockscan-backend:latest"` → Proje: `dockscan`, İmaj: `backend`, Tag: `latest`
+   - `ArtifactName: "dockscan_backend:latest"` → Proje: `dockscan`, İmaj: `backend`, Tag: `latest`
 
 ### İmaj İsimlendirme Kuralı
 
-Script'ler `proje-adi_servis` formatını kullanır. `_` ayracının solu proje adı, sağı servis adıdır:
+`proje_servis` formatı önerilir. `_` ayracının solu proje adı, sağı servis adıdır:
 
 ```
 dockscan_backend:test-v1.0   → Proje: dockscan  | İmaj: backend  | Tag: test-v1.0
-dockscan_frontend:test-v1.0  → Proje: dockscan  | İmaj: frontend | Tag: test-v1.0
-myapp_api:v2.3                → Proje: myapp      | İmaj: api      | Tag: v2.3
+dockscan_nginx:latest        → Proje: dockscan  | İmaj: nginx    | Tag: latest
+myapp_api:v2.3               → Proje: myapp     | İmaj: api      | Tag: v2.3
+```
+
+### Lokal İmajları Tarama (Windows)
+
+Lokal olarak build edilmiş Docker imajlarını taramak için:
+
+```powershell
+# export klasörünü hazırla
+New-Item -ItemType Directory -Force .\export\dockscan | Out-Null
+
+# İmajı tara (Trivy otomatik indirilir)
+$TS = Get-Date -Format "yyyyMMdd-HHmmss"
+docker run --rm `
+  -v /var/run/docker.sock:/var/run/docker.sock `
+  -v "${PWD}\export\dockscan:/output" `
+  aquasec/trivy:latest image `
+  --format json `
+  --output "/output/dockscan_backend-${TS}.json" `
+  dockscan_backend:latest
+
+# Index'i hemen yenile (opsiyonel, 60 sn beklemek yerine)
+Invoke-RestMethod -Method POST "http://localhost:3018/api/reload"
 ```
 
 ### CI/CD Entegrasyonu — `trigger-nexus.sh`
@@ -92,7 +112,7 @@ Jenkins pipeline'ında build alınan her imaj için sunucuya SSH ile bağlanıp 
 ```bash
 # Belirli bir imaj ve tag'i tara
 ./trigger-nexus.sh --image dockscan_backend --tag test-v1.0
-./trigger-nexus.sh --image dockscan_frontend --tag test-v1.0
+./trigger-nexus.sh --image dockscan_nginx --tag test-v1.0
 ```
 
 Tarama tamamlandıktan sonra backend index'i ~60 saniye içinde güncellenir. Ardından `/api/grades` ile sonuç sorgulanabilir:
@@ -107,41 +127,32 @@ GRADE=$(curl -s "http://<host>:3017/api/grades?project=dockscan" \
 
 echo "Güvenlik Notu: $GRADE"
 
-if [[ "$GRADE" == "F" || "$GRADE" == "D" ]]; then
-  echo "HATA: Güvenlik notu yetersiz ($GRADE), pipeline durduruluyor."
+if [[ "$GRADE" == "F" ]]; then
+  echo "HATA: Güvenlik notu kritik ($GRADE), pipeline durduruluyor."
   exit 1
 fi
-```
-
-### Manuel Tarama
-
-```bash
-TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-docker run --rm \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v $(pwd)/export:/output \
-  aquasec/trivy:latest image \
-  --format json -o /output/dockscan/backend-${TIMESTAMP}.json \
-  dockscan-backend:latest
 ```
 
 ## Harf Notu Sistemi
 
 Backend (`/api/grades`) ve frontend dashboard aynı kriterleri kullanır:
 
-| Not | CRITICAL | HIGH | Açıklama |
-|-----|----------|------|----------|
-| **A** | 0 | 0 | Mükemmel |
-| **B** | 0 | ≥ 1 | İyi |
-| **C** | 1–3 | — | Orta risk |
-| **D** | 4–9 | — | Yüksek risk |
-| **F** | ≥ 10 | — | Kritik risk |
+| Not | CRITICAL | HIGH | MEDIUM | Açıklama |
+|-----|----------|------|--------|----------|
+| **A** | 0 | ≤ 2 | ≤ 5 | Mükemmel |
+| **B** | 0 | ≤ 5 | ≤ 10 | İyi |
+| **C** | ≤ 2 | ≤ 8 | ≤ 15 | Orta risk |
+| **D** | ≤ 9 | — | — | Yüksek risk |
+| **F** | ≥ 10 | — | — | Kritik risk |
 
-Proje notu, o projedeki imajların en kötü notunu alır.
+**Proje notu:** İmajların çoğunluğu (>%50) A veya B alıyorsa, proje notu en kötü imajdan bir kademe yumuşatılır.
+Sorunlu imaj kendi notuyla listede görünmeye devam eder.
+
+Örnek: 2×A + 1×D → proje notu **C** (D değil)
 
 ## API Endpoints
 
-### Backend API (`http://<host>:FRONTEND_PORT/api`)
+Tüm API istekleri nginx üzerinden `http://<host>:<FRONTEND_PORT>/api/...` ile erişilir.
 
 | Method | Endpoint | Açıklama |
 |--------|----------|----------|
@@ -153,13 +164,14 @@ Proje notu, o projedeki imajların en kötü notunu alır.
 | GET | `/api/compare?scan1={f}&scan2={f}` | İki tarama arası karşılaştırma |
 | GET | `/api/grades` | Tüm projelerin harf notları |
 | GET | `/api/grades?project={name}` | Tek proje harf notu |
-| POST | `/api/reload` | Index'i manuel olarak yenile (`scan-nexus.sh` / `trigger-nexus.sh` tarafından çağrılır) |
+| GET | `/api/cve/{cveId}` | CVE'yi hangi projelerde içerdiğini sorgula |
+| POST | `/api/reload` | Index'i manuel olarak yenile |
 
 ### `/api/grades` Örnek Çıktı
 
 ```json
 {
-  "generatedAt": "2026-05-14T10:30:00Z",
+  "generatedAt": "2026-06-03T10:30:00Z",
   "projects": [
     {
       "projectName": "dockscan",
@@ -172,7 +184,7 @@ Proje notu, o projedeki imajların en kötü notunu alır.
           "totalVulns": 4,
           "severityCount": { "HIGH": 2, "MEDIUM": 2 },
           "scanCount": 3,
-          "lastScanDate": "2026-05-14T10:00:00Z",
+          "lastScanDate": "2026-06-03T10:00:00Z",
           "firstScanDate": "2026-01-15T08:00:00Z"
         }
       ]
@@ -186,32 +198,33 @@ Proje notu, o projedeki imajların en kötü notunu alır.
 `.env` dosyası (`.example.env`'den kopyalayın):
 
 ```bash
-FRONTEND_PORT=3017        # nginx portu — dashboard bu adreste açılır
-EXPORT_DIR=./export       # Trivy JSON klasörü (relative veya mutlak path)
+FRONTEND_PORT=3017   # nginx portu — dashboard bu adreste açılır
+BACKEND_PORT=3018    # sadece CI/CD reload çağrısı için (opsiyonel)
+EXPORT_DIR=./export  # Trivy JSON klasörü (relative veya mutlak path)
 TZ=Europe/Istanbul
 
-# Opsiyonel — private registry:
-# GOPROXY=http://nexus.internal/repository/go-proxy/,direct
-# NPM_REGISTRY=http://nexus.internal/repository/npm-proxy/
+# VITE_API_BASE boş bırakılırsa nginx proxy üzerinden çalışır (önerilen).
+# Farklı bir sunucudan erişiyorsan nginx portunu yaz:
+# VITE_API_BASE=http://192.168.1.x:3017
+VITE_API_BASE=
 ```
-
-> Backend yalnızca container ağında erişilebilir; tüm API istekleri nginx üzerinden (`/api/...`) yönlendirilir. Dışarıya yalnızca `FRONTEND_PORT` açıktır.
 
 ## Proje Yapısı
 
 ```
-dockscan/
+DockScan/
 ├── backend/                # Go backend (chi router)
 │   ├── main.go
-│   └── Dockerfile          # golang:alpine → alpine runtime (GOPROXY ARG)
+│   └── Dockerfile
 ├── frontend/               # React 18 + Vite + TypeScript + Tailwind
-│   └── Dockerfile          # Sadece build artifact üretir (nginx yok)
+│   └── src/
 ├── nginx/                  # Tek nginx — hem SPA serve hem /api/ proxy
 │   ├── Dockerfile          # Multi-stage: node build → nginx:alpine
-│   └── nginx.conf          # Static files + /api/ → backend:8080 + LB real IP
+│   └── nginx.conf
 ├── export/                 # Trivy JSON raporları (buraya koyun)
 ├── trigger-nexus.sh        # CI/CD: belirli imaj/tag tarama scripti
 ├── scan-nexus.sh           # Nexus'taki tüm imajları tara (toplu)
+├── .example.env
 └── docker-compose.yml      # 2 servis: backend + nginx
 ```
 
@@ -235,10 +248,10 @@ Kullanıcı (veya LB)
 
 - **Bellek içi index**: Uygulama açılışında tüm JSON dosyaları taranarak `IndexData` yapısında belleğe alınır; `/api/scans`, `/api/projects`, `/api/grades` endpoint'leri diski tekrar okumadan bu index'ten cevap üretir.
 - **Otomatik index yenileme**: Arka planda her 60 saniyede bir index yeniden oluşturulur; yeni eklenen JSON dosyaları kısa sürede görünür.
+- **Otomatik temizlik**: Her 24 saatte bir 30 günden eski scan dosyaları temizlenir; her proje klasöründe en yeni dosya daima korunur.
 - **HTTP timeout'ları**: `ReadTimeout`, `WriteTimeout`, `IdleTimeout` yapılandırılmıştır.
 - **Frontend debounce**: Proje arama kutusunda 300 ms debounce uygulanır.
 - **Derin URL routing**: `/projects/{projectName}` URL'leri tarayıcıda doğrudan açılabilir, geri/ileri tuşları çalışır.
-
 
 ## Health Check
 
