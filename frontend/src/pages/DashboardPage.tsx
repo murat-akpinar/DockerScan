@@ -17,6 +17,7 @@ import TimelineTooltip from '../components/TimelineTooltip';
 type OverallStats = {
   totalProjects: number;
   totalScans: number;
+  totalImages: number;
   totalVulns: number;
   severityCount: Record<string, number>;
 };
@@ -150,11 +151,9 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
           </div>
           <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-catppuccin-overlay1">
-              Backend URL
+              Toplam İmaj
             </p>
-            <p className="mt-2 text-xs text-catppuccin-subtext0 break-all">
-              {apiBase || 'Tanımlı değil'}
-            </p>
+            <p className="mt-2 text-3xl font-semibold">{overallStats.totalImages}</p>
           </div>
         </section>
 

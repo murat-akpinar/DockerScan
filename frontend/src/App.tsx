@@ -456,6 +456,7 @@ function App() {
 
     const totalProjects = safeProjects.length;
     const totalScans = safeProjects.reduce((sum, p) => sum + (p?.totalScans || 0), 0);
+    const totalImages = safeProjects.reduce((sum, p) => sum + (p?.images?.length || 0), 0);
 
     // En güncel açık sayılarını, her proje için her imajın "son taraması"na göre hesapla
     const projectImageLatestScan = buildProjectImageLatestScan(safeAllScans);
@@ -482,7 +483,7 @@ function App() {
       });
     });
 
-    return { totalProjects, totalScans, totalVulns, severityCount };
+    return { totalProjects, totalScans, totalImages, totalVulns, severityCount };
   }, [projects, allScans]);
 
   // Filter projects based on search query
