@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -35,9 +36,11 @@ const (
 
 // IndexData holds precomputed scan and project summaries in memory.
 type IndexData struct {
-	Scans       []ScanSummary
-	Projects    []ProjectSummary
-	GeneratedAt time.Time
+	Scans        []ScanSummary
+	Projects     []ProjectSummary
+	CheckovScans []CheckovScanRecord
+	OsvScans     []OsvScanRecord
+	GeneratedAt  time.Time
 
 	// cveIndex maps a CVE ID to the indices (into Scans) of the scans that
 	// contain it. Lets /api/cve answer from memory instead of re-reading disk.
@@ -52,6 +55,58 @@ type IndexData struct {
 	etag string
 }
 
+// ── Checkov types ──────────────────────────────────────────────────────────
+
+type CheckovFinding struct {
+	CheckID  string `json:"checkId"`
+	Name     string `json:"name"`
+	FilePath string `json:"filePath"`
+	Line     int    `json:"line"`
+}
+
+type CheckovScanRecord struct {
+	Filename    string           `json:"filename"`
+	ProjectName string           `json:"projectName"`
+	ServiceName string           `json:"serviceName"`
+	Tag         string           `json:"tag"`
+	ScannedAt   time.Time        `json:"scannedAt"`
+	Passed      int              `json:"passed"`
+	Failed      int              `json:"failed"`
+	Skipped     int              `json:"skipped"`
+	Findings    []CheckovFinding `json:"findings"`
+}
+
+// ── OSV-Scanner types ──────────────────────────────────────────────────────
+
+type OsvVuln struct {
+	ID      string `json:"id"`
+	Summary string `json:"summary"`
+}
+
+type OsvPackage struct {
+	Name      string    `json:"name"`
+	Version   string    `json:"version"`
+	Ecosystem string    `json:"ecosystem"`
+	VulnCount int       `json:"vulnCount"`
+	Vulns     []OsvVuln `json:"vulns"`
+}
+
+type OsvSource struct {
+	Path     string       `json:"path"`
+	Type     string       `json:"type"`
+	Packages []OsvPackage `json:"packages"`
+}
+
+type OsvScanRecord struct {
+	Filename    string      `json:"filename"`
+	ProjectName string      `json:"projectName"`
+	ServiceName string      `json:"serviceName"`
+	Tag         string      `json:"tag"`
+	ScannedAt   time.Time   `json:"scannedAt"`
+	TotalVulns  int         `json:"totalVulns"`
+	Sources     []OsvSource `json:"sources"`
+}
+
 // fileCacheEntry caches the parsed result of a single scan file so that
 // unchanged files are not re-parsed on every index rebuild.
 type fileCacheEntry struct {
@@ -59,6 +114,18 @@ type fileCacheEntry struct {
 	size    int64
 	summary ScanSummary
 	cveIDs  []string // unique CVE IDs present in this file
+}
+
+type checkovCacheEntry struct {
+	modTime time.Time
+	size    int64
+	record  CheckovScanRecord
+}
+
+type osvCacheEntry struct {
+	modTime time.Time
+	size    int64
+	record  OsvScanRecord
 }
 
 var (
@@ -70,7 +137,9 @@ var (
 	rebuildMu sync.Mutex
 	// fileCache is keyed by absolute file path; only touched inside rebuildIndex
 	// (serialized by rebuildMu).
-	fileCache = make(map[string]*fileCacheEntry)
+	fileCache        = make(map[string]*fileCacheEntry)
+	checkovFileCache = make(map[string]*checkovCacheEntry)
+	osvFileCache     = make(map[string]*osvCacheEntry)
 	// cveIntern deduplicates CVE ID strings across files to limit memory use.
 	cveIntern = make(map[string]string)
 )
@@ -741,6 +810,72 @@ func main() {
 		}
 	})
 
+	// Checkov scan results
+	r.Get("/api/checkov", func(w http.ResponseWriter, r *http.Request) {
+		projectFilter := r.URL.Query().Get("project")
+
+		indexMu.RLock()
+		current := indexData
+		indexMu.RUnlock()
+
+		if current == nil {
+			http.Error(w, "index not ready", http.StatusServiceUnavailable)
+			return
+		}
+
+		result := current.CheckovScans
+		if projectFilter != "" {
+			var filtered []CheckovScanRecord
+			for _, s := range result {
+				if s.ProjectName == projectFilter {
+					filtered = append(filtered, s)
+				}
+			}
+			result = filtered
+		}
+		if result == nil {
+			result = []CheckovScanRecord{}
+		}
+
+		w.Header().Set(headerContentType, mimeApplicationJSON)
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			http.Error(w, errEncodeResponse, http.StatusInternalServerError)
+		}
+	})
+
+	// OSV-Scanner scan results
+	r.Get("/api/osv", func(w http.ResponseWriter, r *http.Request) {
+		projectFilter := r.URL.Query().Get("project")
+
+		indexMu.RLock()
+		current := indexData
+		indexMu.RUnlock()
+
+		if current == nil {
+			http.Error(w, "index not ready", http.StatusServiceUnavailable)
+			return
+		}
+
+		result := current.OsvScans
+		if projectFilter != "" {
+			var filtered []OsvScanRecord
+			for _, s := range result {
+				if s.ProjectName == projectFilter {
+					filtered = append(filtered, s)
+				}
+			}
+			result = filtered
+		}
+		if result == nil {
+			result = []OsvScanRecord{}
+		}
+
+		w.Header().Set(headerContentType, mimeApplicationJSON)
+		if err := json.NewEncoder(w).Encode(result); err != nil {
+			http.Error(w, errEncodeResponse, http.StatusInternalServerError)
+		}
+	})
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -1391,6 +1526,8 @@ func rebuildIndex(exportDir string) error {
 	scans := make([]ScanSummary, 0, len(jsonFiles))
 	// scanCVEs[i] holds the CVE IDs of scans[i] (kept aligned).
 	scanCVEs := make([][]string, 0, len(jsonFiles))
+	checkovScans := make([]CheckovScanRecord, 0)
+	osvScans := make([]OsvScanRecord, 0)
 
 	seenPaths := make(map[string]struct{}, len(jsonFiles))
 	parsed, reused := 0, 0
@@ -1415,9 +1552,43 @@ func rebuildIndex(exportDir string) error {
 		fmt.Fprintf(h, "%s|%d|%d", relPath, info.ModTime().UnixNano(), info.Size())
 		fingerprint ^= h.Sum64()
 
-		// Incremental: reuse the cached parse if the file is unchanged.
-		// Trivy writes new timestamped files and never edits existing ones,
-		// so (modTime + size) is a reliable freshness key.
+		base := filepath.Base(filePath)
+
+		if strings.HasPrefix(base, "checkov-") {
+			if c, ok := checkovFileCache[filePath]; ok && c.modTime.Equal(info.ModTime()) && c.size == info.Size() {
+				checkovScans = append(checkovScans, c.record)
+				reused++
+				continue
+			}
+			record, err := parseCheckovFile(filePath, info, relPath)
+			if err != nil {
+				log.Printf("warning: failed to parse checkov file %s: %v", relPath, err)
+				continue
+			}
+			checkovFileCache[filePath] = &checkovCacheEntry{modTime: info.ModTime(), size: info.Size(), record: record}
+			checkovScans = append(checkovScans, record)
+			parsed++
+			continue
+		}
+
+		if strings.HasPrefix(base, "osv-") {
+			if c, ok := osvFileCache[filePath]; ok && c.modTime.Equal(info.ModTime()) && c.size == info.Size() {
+				osvScans = append(osvScans, c.record)
+				reused++
+				continue
+			}
+			record, err := parseOsvFile(filePath, info, relPath)
+			if err != nil {
+				log.Printf("warning: failed to parse osv file %s: %v", relPath, err)
+				continue
+			}
+			osvFileCache[filePath] = &osvCacheEntry{modTime: info.ModTime(), size: info.Size(), record: record}
+			osvScans = append(osvScans, record)
+			parsed++
+			continue
+		}
+
+		// Trivy file — existing logic.
 		if c, ok := fileCache[filePath]; ok && c.modTime.Equal(info.ModTime()) && c.size == info.Size() {
 			scans = append(scans, c.summary)
 			scanCVEs = append(scanCVEs, c.cveIDs)
@@ -1441,6 +1612,16 @@ func rebuildIndex(exportDir string) error {
 	for path := range fileCache {
 		if _, ok := seenPaths[path]; !ok {
 			delete(fileCache, path)
+		}
+	}
+	for path := range checkovFileCache {
+		if _, ok := seenPaths[path]; !ok {
+			delete(checkovFileCache, path)
+		}
+	}
+	for path := range osvFileCache {
+		if _, ok := seenPaths[path]; !ok {
+			delete(osvFileCache, path)
 		}
 	}
 
@@ -1541,20 +1722,22 @@ func rebuildIndex(exportDir string) error {
 
 	generatedAt := time.Now()
 	newIndex := &IndexData{
-		Scans:       scans,
-		Projects:    projects,
-		GeneratedAt: generatedAt,
-		cveIndex:    cveIndex,
-		imageScans:  imageScans,
-		etag:        fmt.Sprintf(`"%x-%d"`, fingerprint, len(scans)),
+		Scans:        scans,
+		Projects:     projects,
+		CheckovScans: checkovScans,
+		OsvScans:     osvScans,
+		GeneratedAt:  generatedAt,
+		cveIndex:     cveIndex,
+		imageScans:   imageScans,
+		etag:         fmt.Sprintf(`"%x-%d"`, fingerprint, len(scans)),
 	}
 
 	indexMu.Lock()
 	indexData = newIndex
 	indexMu.Unlock()
 
-	log.Printf("index rebuilt: %d scans, %d projects (%d parsed, %d cached)",
-		len(scans), len(projects), parsed, reused)
+	log.Printf("index rebuilt: %d trivy, %d checkov, %d osv, %d projects (%d parsed, %d cached)",
+		len(scans), len(checkovScans), len(osvScans), len(projects), parsed, reused)
 	return nil
 }
 
@@ -1725,4 +1908,214 @@ func gradeOrder(grade string) int {
 	default:
 		return -1
 	}
+}
+
+// parseSecurityScanFilename extracts projectName, serviceName, tag, and scannedAt
+// from a checkov/osv relative path like "dockscan/checkov-dockscan_backend-local-20260606-120000.json".
+func parseSecurityScanFilename(relPath, prefix string, fallback time.Time) (projectName, serviceName, tag string, scannedAt time.Time) {
+	relPath = filepath.ToSlash(relPath)
+	lastSlash := strings.LastIndex(relPath, "/")
+	var base string
+	if lastSlash >= 0 {
+		projectName = relPath[:lastSlash]
+		base = relPath[lastSlash+1:]
+	} else {
+		base = relPath
+	}
+
+	base = strings.TrimSuffix(base, ".json")
+	base = strings.TrimPrefix(base, prefix)
+
+	scannedAt = fallback
+	if tsStr, ok := extractTimestampSuffix(base); ok {
+		if t, err := time.ParseInLocation("20060102-150405", tsStr[1:], time.Local); err == nil {
+			scannedAt = t
+		}
+		base = base[:len(base)-len(tsStr)]
+	}
+
+	// base is now "{IMAGE_NAME}-{tag}", e.g. "dockscan_backend-local"
+	us := strings.Index(base, "_")
+	if us < 0 {
+		dash := strings.Index(base, "-")
+		if dash > 0 && dash < len(base)-1 {
+			serviceName = base[:dash]
+			tag = base[dash+1:]
+		} else {
+			serviceName = base
+		}
+		return
+	}
+	right := base[us+1:] // e.g. "backend-local"
+	dash := strings.Index(right, "-")
+	if dash > 0 && dash < len(right)-1 {
+		serviceName = right[:dash]
+		tag = right[dash+1:]
+	} else {
+		serviceName = right
+	}
+	return
+}
+
+// parseCheckovFile parses a Checkov JSON output file (array or single object).
+func parseCheckovFile(filePath string, info os.FileInfo, relPath string) (CheckovScanRecord, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return CheckovScanRecord{}, err
+	}
+	data = bytes.TrimSpace(data)
+	// Strip UTF-8 BOM (PowerShell Out-File adds it)
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return CheckovScanRecord{}, fmt.Errorf("empty checkov file")
+	}
+
+	var entries []json.RawMessage
+	if data[0] == '[' {
+		if err := json.Unmarshal(data, &entries); err != nil {
+			return CheckovScanRecord{}, err
+		}
+	} else {
+		entries = []json.RawMessage{json.RawMessage(data)}
+	}
+
+	type rawCheck struct {
+		CheckID       string `json:"check_id"`
+		CheckName     string `json:"check_name"`
+		FilePath      string `json:"file_path"`
+		FileLineRange []int  `json:"file_line_range"`
+	}
+	type rawEntry struct {
+		Results struct {
+			FailedChecks []rawCheck `json:"failed_checks"`
+		} `json:"results"`
+		Summary struct {
+			Passed  int `json:"passed"`
+			Failed  int `json:"failed"`
+			Skipped int `json:"skipped"`
+		} `json:"summary"`
+	}
+
+	var totalPassed, totalFailed, totalSkipped int
+	var findings []CheckovFinding
+
+	for _, raw := range entries {
+		var e rawEntry
+		if err := json.Unmarshal(raw, &e); err != nil {
+			continue
+		}
+		totalPassed += e.Summary.Passed
+		totalFailed += e.Summary.Failed
+		totalSkipped += e.Summary.Skipped
+
+		for _, fc := range e.Results.FailedChecks {
+			line := 0
+			if len(fc.FileLineRange) > 0 {
+				line = fc.FileLineRange[0]
+			}
+			findings = append(findings, CheckovFinding{
+				CheckID:  fc.CheckID,
+				Name:     fc.CheckName,
+				FilePath: strings.TrimPrefix(fc.FilePath, "/project/"),
+				Line:     line,
+			})
+		}
+	}
+
+	projectName, serviceName, tag, scannedAt := parseSecurityScanFilename(relPath, "checkov-", info.ModTime())
+	if findings == nil {
+		findings = []CheckovFinding{}
+	}
+	return CheckovScanRecord{
+		Filename:    relPath,
+		ProjectName: projectName,
+		ServiceName: serviceName,
+		Tag:         tag,
+		ScannedAt:   scannedAt,
+		Passed:      totalPassed,
+		Failed:      totalFailed,
+		Skipped:     totalSkipped,
+		Findings:    findings,
+	}, nil
+}
+
+// parseOsvFile parses an OSV-Scanner JSON output file.
+func parseOsvFile(filePath string, info os.FileInfo, relPath string) (OsvScanRecord, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return OsvScanRecord{}, err
+	}
+	// Strip UTF-8 BOM (PowerShell Out-File adds it)
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	data = bytes.TrimSpace(data)
+
+	var raw struct {
+		Results []struct {
+			Source struct {
+				Path string `json:"path"`
+				Type string `json:"type"`
+			} `json:"source"`
+			Packages []struct {
+				Package struct {
+					Name      string `json:"name"`
+					Version   string `json:"version"`
+					Ecosystem string `json:"ecosystem"`
+				} `json:"package"`
+				Vulnerabilities []struct {
+					ID      string `json:"id"`
+					Summary string `json:"summary"`
+				} `json:"vulnerabilities"`
+			} `json:"packages"`
+		} `json:"results"`
+	}
+
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return OsvScanRecord{}, fmt.Errorf("not valid osv json: %w", err)
+	}
+
+	var sources []OsvSource
+	totalVulns := 0
+
+	for _, result := range raw.Results {
+		var pkgs []OsvPackage
+		for _, p := range result.Packages {
+			var vulns []OsvVuln
+			for _, v := range p.Vulnerabilities {
+				vulns = append(vulns, OsvVuln{ID: v.ID, Summary: v.Summary})
+			}
+			if len(vulns) == 0 {
+				continue
+			}
+			totalVulns += len(vulns)
+			pkgs = append(pkgs, OsvPackage{
+				Name:      p.Package.Name,
+				Version:   p.Package.Version,
+				Ecosystem: p.Package.Ecosystem,
+				VulnCount: len(vulns),
+				Vulns:     vulns,
+			})
+		}
+		if len(pkgs) > 0 {
+			sources = append(sources, OsvSource{
+				Path:     strings.TrimPrefix(result.Source.Path, "/src/"),
+				Type:     result.Source.Type,
+				Packages: pkgs,
+			})
+		}
+	}
+
+	projectName, serviceName, tag, scannedAt := parseSecurityScanFilename(relPath, "osv-", info.ModTime())
+	if sources == nil {
+		sources = []OsvSource{}
+	}
+	return OsvScanRecord{
+		Filename:    relPath,
+		ProjectName: projectName,
+		ServiceName: serviceName,
+		Tag:         tag,
+		ScannedAt:   scannedAt,
+		TotalVulns:  totalVulns,
+		Sources:     sources,
+	}, nil
 }
