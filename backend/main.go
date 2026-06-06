@@ -968,9 +968,104 @@ func computeAllowedOrigins() []string {
 }
 
 func handleRoot(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set(headerContentType, mimeTextPlainUTF8)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("Trivy Dashboard backend is running.\nTry /health or /api/scans\n"))
+	_, _ = w.Write([]byte(`<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>DockScan API</title>
+<style>
+  body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; margin: 2rem; }
+  h1   { color: #89b4fa; margin-bottom: 0.25rem; }
+  p    { color: #6c7086; margin-top: 0; }
+  table { border-collapse: collapse; width: 100%; max-width: 800px; margin-top: 1.5rem; }
+  th   { text-align: left; color: #a6adc8; font-size: 0.75rem; text-transform: uppercase;
+         letter-spacing: 0.05em; padding: 0.4rem 0.75rem; border-bottom: 1px solid #313244; }
+  td   { padding: 0.4rem 0.75rem; border-bottom: 1px solid #1e1e2e; font-size: 0.875rem; }
+  tr:hover td { background: #313244; }
+  .method-get  { color: #a6e3a1; }
+  .method-post { color: #fab387; }
+  a    { color: #89dceb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 0.25rem;
+           font-size: 0.7rem; margin-right: 0.5rem; }
+  .bg-get  { background: #a6e3a1; color: #1e1e2e; }
+  .bg-post { background: #fab387; color: #1e1e2e; }
+</style>
+</head>
+<body>
+<h1>DockScan Backend API</h1>
+<p>Tüm endpoint'ler aşağıda listelenmiştir.</p>
+<table>
+  <thead>
+    <tr><th>Metod</th><th>Endpoint</th><th>Açıklama</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td><a href="/health">/health</a></td>
+      <td>Backend sağlık kontrolü</td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-post">POST</span></td>
+      <td>/api/reload</td>
+      <td>Export klasörünü yeniden tara, index'i güncelle</td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td><a href="/api/scans">/api/scans</a></td>
+      <td>Tüm Trivy tarama özetleri</td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td>/api/scans/{path}</td>
+      <td>Belirli bir taramanın zafiyet detayları</td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td><a href="/api/projects">/api/projects</a></td>
+      <td>Tüm projelerin özet listesi</td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td>/api/projects/{project}</td>
+      <td>Projeye ait imaj ve tarama detayları</td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td>/api/projects/{project}/images/{image}/scans</td>
+      <td>İmaja ait tarama geçmişi</td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td><a href="/api/grades">/api/grades</a></td>
+      <td>Proje/imaj bazlı güvenlik notu (A–F) &nbsp;<code>?project=</code></td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td>/api/compare</td>
+      <td>İki taramayı karşılaştır &nbsp;<code>?scan1=&amp;scan2=</code></td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td>/api/cve/{cveId}</td>
+      <td>CVE ID'ye göre hangi taramalarda geçtiğini göster</td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td><a href="/api/checkov">/api/checkov</a></td>
+      <td>Checkov IaC tarama sonuçları &nbsp;<code>?project=</code></td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td><a href="/api/osv">/api/osv</a></td>
+      <td>OSV-Scanner bağımlılık zafiyet sonuçları &nbsp;<code>?project=</code></td>
+    </tr>
+  </tbody>
+</table>
+</body>
+</html>`))
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
