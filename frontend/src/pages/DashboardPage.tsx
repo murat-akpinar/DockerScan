@@ -1,4 +1,5 @@
 import React from 'react';
+import { useLanguage, LangToggle } from '../i18n/LanguageContext';
 import {
   PieChart,
   Pie,
@@ -79,6 +80,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
   onRefresh,
   refreshing,
 }) => {
+  const { t } = useLanguage();
   const [activeSeries, setActiveSeries] = React.useState<string | null>(null);
   const [hiddenSeries, setHiddenSeries] = React.useState<Set<string>>(new Set());
 
@@ -100,18 +102,18 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
               onClick={onGoProjects}
               className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
             >
-              Projeler →
+              {t.dashboard.goProjects}
             </button>
             <button
               onClick={onGoSecurity}
               className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
             >
-              Güvenlik →
+              {t.dashboard.goSecurity}
             </button>
             <span className="rounded bg-catppuccin-teal/10 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-catppuccin-teal">
               Trivy
             </span>
-            <span className="text-lg font-semibold">Dashboard</span>
+            <span className="text-lg font-semibold">{t.dashboard.title}</span>
           </div>
           <div className="flex items-center gap-3">
             {onRefresh && (
@@ -119,12 +121,12 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
                 onClick={onRefresh}
                 disabled={refreshing}
                 className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium disabled:opacity-50"
-                title="Tarama verilerini yenile"
               >
-                {refreshing ? '⟳ Yenileniyor...' : '⟳ Yenile'}
+                {refreshing ? t.common.refreshing : t.common.refresh}
               </button>
             )}
-            <span className="text-xs text-catppuccin-overlay1">DockerScan</span>
+            <LangToggle />
+            <span className="text-xs text-catppuccin-overlay1">{t.common.dockscan}</span>
           </div>
         </div>
       </header>
@@ -133,25 +135,25 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
         <section className="grid gap-4 md:grid-cols-4">
           <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-catppuccin-overlay1">
-              Toplam Proje
+              {t.dashboard.totalProjects}
             </p>
             <p className="mt-2 text-3xl font-semibold">{overallStats.totalProjects}</p>
           </div>
           <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-catppuccin-overlay1">
-              Toplam Tarama
+              {t.dashboard.totalScans}
             </p>
             <p className="mt-2 text-3xl font-semibold">{overallStats.totalScans}</p>
           </div>
           <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-catppuccin-overlay1">
-              Toplam Açık
+              {t.dashboard.totalVulns}
             </p>
             <p className="mt-2 text-3xl font-semibold">{overallStats.totalVulns}</p>
           </div>
           <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-catppuccin-overlay1">
-              Toplam İmaj
+              {t.dashboard.totalImages}
             </p>
             <p className="mt-2 text-3xl font-semibold">{overallStats.totalImages}</p>
           </div>
@@ -214,7 +216,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
           {/* Pie Chart - Severity Distribution */}
           <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
             <h2 className="text-sm font-semibold text-catppuccin-text mb-4">
-              Severity Dağılımı (En Son Taramalar)
+              {t.dashboard.severityDist}
             </h2>
             {pieChartData.length > 0 ? (
               <ResponsiveContainer width="100%" height={300}>
@@ -251,7 +253,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
               </ResponsiveContainer>
             ) : (
               <div className="flex items-center justify-center h-[300px] text-catppuccin-overlay1">
-                Henüz veri yok
+                {t.dashboard.noSeverityData}
               </div>
             )}
           </div>
@@ -260,16 +262,13 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
           <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold text-catppuccin-text">
-                Tüm Projeler - Günlük Açık Sayısı Zaman Çizelgesi
+                {t.dashboard.timeline}
               </h2>
               <button
                 onClick={() => setSeparateVersions(!separateVersions)}
                 className="text-xs px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 text-catppuccin-subtext0 transition-colors"
-                title={
-                  separateVersions ? 'Versiyonları birleştir (genel trend)' : 'Versiyonları ayrı göster'
-                }
               >
-                {separateVersions ? '📊 Birleştirilmiş' : '🔀 Versiyonları Ayrı'}
+                {separateVersions ? t.dashboard.mergedVersions : t.dashboard.separateVersions}
               </button>
             </div>
             {unifiedTimelineData.data.length > 0 ? (
@@ -361,13 +360,10 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
                     );
                   })}
                 </div>
-                <p className="mt-2 text-[11px] text-catppuccin-overlay0">
-                  İpucu: Bir seriyi vurgulamak için açıklamadaki adın üzerine gelin; gizlemek/göstermek için tıklayın.
-                </p>
               </>
             ) : (
               <div className="flex items-center justify-center h-[300px] text-catppuccin-overlay1">
-                Henüz veri yok
+                {t.dashboard.timelineEmpty}
               </div>
             )}
           </div>
@@ -375,27 +371,20 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
 
         <section className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-catppuccin-text">Genel Özet</h2>
-            <span className="text-xs text-catppuccin-overlay0">
-              Tüm projelerin toplam istatistikleri
-            </span>
+            <h2 className="text-sm font-semibold text-catppuccin-text">{t.dashboard.title}</h2>
           </div>
 
           <div className="text-sm text-catppuccin-subtext0 space-y-2">
             <p>
-              <span className="text-catppuccin-overlay1">Durum:</span>{' '}
-              {loading ? 'Yükleniyor...' : error ? `Hata: ${error}` : 'Hazır'}
-            </p>
-            <p>
-              <span className="text-catppuccin-overlay1">Toplam Proje:</span>{' '}
+              <span className="text-catppuccin-overlay1">{t.dashboard.totalProjects}:</span>{' '}
               {overallStats.totalProjects}
             </p>
             <p>
-              <span className="text-catppuccin-overlay1">Toplam Tarama:</span>{' '}
+              <span className="text-catppuccin-overlay1">{t.dashboard.totalScans}:</span>{' '}
               {overallStats.totalScans}
             </p>
             <p>
-              <span className="text-catppuccin-overlay1">Toplam Açık:</span>{' '}
+              <span className="text-catppuccin-overlay1">{t.dashboard.totalVulns}:</span>{' '}
               {overallStats.totalVulns}
             </p>
           </div>
@@ -405,7 +394,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
               onClick={onGoProjects}
               className="px-4 py-2 rounded-lg border border-catppuccin-teal bg-catppuccin-teal/10 hover:bg-catppuccin-teal/20 text-catppuccin-teal font-medium transition-colors"
             >
-              Tüm Projeleri Görüntüle →
+              {t.dashboard.goProjects}
             </button>
           </div>
         </section>
@@ -414,7 +403,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
           <section className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold text-catppuccin-text">
-                {selectedSeverity} Severity'ye Sahip Projeler ({projectsBySeverity.length})
+                {selectedSeverity} {t.dashboard.filteredBy} ({projectsBySeverity.length})
               </h2>
               <button
                 onClick={() => setSelectedSeverity(null)}
@@ -445,13 +434,13 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
                         {project.projectName}
                       </h3>
                       <p className="text-xs text-catppuccin-overlay1 mt-1">
-                        {project.totalScans} tarama • Son tarama:{' '}
+                        {project.totalScans} {t.common.scans} • {t.common.lastScan}:{' '}
                         {new Date(project.lastScan).toLocaleString()}
                       </p>
                     </div>
                     <div className="flex items-center gap-4">
                       <div className="text-right">
-                        <span className="text-xs text-catppuccin-overlay1">Toplam Açık</span>
+                        <span className="text-xs text-catppuccin-overlay1">{t.common.totalVulns}</span>
                         <p className="text-2xl font-semibold text-catppuccin-text">
                           {project.totalVulns}
                         </p>

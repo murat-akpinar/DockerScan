@@ -17,6 +17,7 @@ import ProjectsPage from './pages/ProjectsPage';
 import DashboardPage from './pages/DashboardPage';
 import SecurityPage from './pages/SecurityPage';
 import TimelineTooltip from './components/TimelineTooltip';
+import { useLanguage, LangToggle } from './i18n/LanguageContext';
 
 type ProjectSummary = {
   projectName: string;
@@ -233,6 +234,7 @@ function getInitialSelectedProject(): string | null {
 }
 
 function App() {
+  const { t } = useLanguage();
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -698,14 +700,14 @@ function App() {
                   }}
                   className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
                 >
-                  ← Ana Sayfa
+                  ← {t.nav.home}
                 </button>
               </div>
             </div>
           </header>
           <main className="mx-auto max-w-5xl px-4 py-6">
             <div className="flex items-center justify-center h-64">
-              <p className="text-catppuccin-overlay1">Yükleniyor...</p>
+              <p className="text-catppuccin-overlay1">{t.common.loading}</p>
             </div>
           </main>
         </div>
@@ -728,7 +730,7 @@ function App() {
                   }}
                   className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
                 >
-                  Ana Sayfa
+                  {t.nav.home}
                 </button>
                 <span className="text-catppuccin-overlay1">/</span>
                 <button
@@ -742,7 +744,7 @@ function App() {
                   }}
                   className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
                 >
-                  Projeler
+                  {t.nav.projects}
                 </button>
                 <span className="text-catppuccin-overlay1">/</span>
                 <span className="px-3 py-1.5 rounded bg-catppuccin-teal/10 text-catppuccin-teal font-semibold">
@@ -761,9 +763,10 @@ function App() {
                 }}
                 className="px-4 py-2 rounded-lg border border-catppuccin-blue bg-catppuccin-blue/10 hover:bg-catppuccin-blue/20 text-catppuccin-blue font-medium transition-colors"
               >
-                Karşılaştırma
+                {t.nav.comparison}
               </button>
-              <span className="text-xs text-catppuccin-overlay1">DockerScan</span>
+              <LangToggle />
+              <span className="text-xs text-catppuccin-overlay1">{t.common.dockscan}</span>
             </div>
           </div>
         </header>
@@ -772,13 +775,13 @@ function App() {
           <section className="grid gap-4 md:grid-cols-4">
             <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
               <p className="text-xs font-medium uppercase tracking-wide text-catppuccin-overlay1">
-                Toplam Tarama
+                {t.projectDetail.totalScans}
               </p>
               <p className="mt-2 text-3xl font-semibold">{projectDetails.totalScans}</p>
             </div>
             <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
               <p className="text-xs font-medium uppercase tracking-wide text-catppuccin-overlay1">
-                Toplam Açık
+                {t.projectDetail.totalVulns}
               </p>
               <p className="mt-2 text-3xl font-semibold">{projectDetails.totalVulns}</p>
             </div>
@@ -802,14 +805,13 @@ function App() {
           <section className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold text-catppuccin-text">
-                {projectDetails.projectName} – Açık Sayısı Zaman Çizelgesi
+                {t.projectDetail.timeline(projectDetails.projectName)}
               </h2>
               <button
                 onClick={() => setSeparateVersions(!separateVersions)}
                 className="text-xs px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 text-catppuccin-subtext0 transition-colors"
-                title={separateVersions ? 'Versiyonları birleştir (genel trend)' : 'Versiyonları ayrı göster'}
               >
-                {separateVersions ? '📊 Birleştirilmiş' : '🔀 Versiyonları Ayrı'}
+                {separateVersions ? t.dashboard.mergedVersions : t.dashboard.separateVersions}
               </button>
             </div>
             {projectTimelineData.data.length > 0 ? (
@@ -829,7 +831,7 @@ function App() {
                       stroke="#6c7086"
                       style={{ fontSize: '11px' }}
                       label={{
-                        value: 'Açık Sayısı',
+                        value: t.common.totalVulns,
                         angle: -90,
                         position: 'insideLeft',
                         style: { fontSize: '11px', fill: '#6c7086' },
@@ -880,16 +882,16 @@ function App() {
               </>
             ) : (
               <div className="flex items-center justify-center h-[260px] text-catppuccin-overlay1 text-sm">
-                Bu proje için henüz zaman çizelgesi oluşturulacak tarama verisi yok.
+                {t.projectDetail.timelineEmpty}
               </div>
             )}
           </section>
 
           <section className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
-            <h2 className="text-sm font-semibold text-catppuccin-text mb-4">İmajlar ve Taramalar</h2>
+            <h2 className="text-sm font-semibold text-catppuccin-text mb-4">{t.projectDetail.images}</h2>
 
             {projectDetails.images.length === 0 ? (
-              <div className="text-center py-8 text-catppuccin-overlay1">Henüz tarama bulunamadı.</div>
+              <div className="text-center py-8 text-catppuccin-overlay1">{t.projectDetail.noScans}</div>
             ) : (
               <div className="space-y-4">
                 {projectDetails.images.map((image) => {
@@ -952,14 +954,14 @@ function App() {
                                 {image.imageName}
                               </h3>
                               <p className="text-xs text-catppuccin-overlay1 mt-1">
-                                {image.scans.length} tarama • Son tarama:{' '}
+                                {t.projectDetail.scanCount(image.scans.length)} • {t.common.lastScan}:{' '}
                                 {new Date(image.lastScan).toLocaleString()}
                               </p>
                             </div>
                           </div>
                           <div className="flex items-center gap-6 text-sm">
                             <div className="text-right">
-                              <span className="text-catppuccin-overlay1 text-xs">Toplam: </span>
+                              <span className="text-catppuccin-overlay1 text-xs">{t.common.total}: </span>
                               <span className="font-bold text-lg text-catppuccin-text">
                                 {image.totalVulns}
                               </span>
@@ -989,7 +991,7 @@ function App() {
                           </div>
                         </div>
                         <div className="flex items-center gap-1 text-xs text-catppuccin-subtext0 select-none">
-                          <span>{isExpanded ? 'Tarama Geçmişini Gizle' : 'Tarama Geçmişini Göster'}</span>
+                          <span>{isExpanded ? t.projectDetail.hideScanHistory : t.projectDetail.showScanHistory}</span>
                           <span
                             className={`inline-block transition-transform ${isExpanded ? 'rotate-180' : ''}`}
                             aria-hidden="true"
@@ -1002,7 +1004,7 @@ function App() {
                       {isExpanded && (
                         <div className="mt-2 border border-catppuccin-surface0 rounded-lg p-4 bg-catppuccin-mantle/60">
                           <h4 className="text-sm font-semibold text-catppuccin-text mb-3">
-                            Tarama Geçmişi ({image.scans.length} tarama)
+                            {t.projectDetail.scanHistory} ({t.projectDetail.scanCount(image.scans.length)})
                           </h4>
                           <div className="space-y-2">
                             {image.scans.map((scan) => {
@@ -1075,13 +1077,13 @@ function App() {
                                             className="text-xs text-catppuccin-blue hover:text-catppuccin-sapphire mt-1 underline cursor-pointer relative z-10 bg-transparent border-none p-0"
                                             style={{ position: 'relative', zIndex: 10 }}
                                           >
-                                            Karşılaştır
+                                            {t.projectDetail.compare}
                                           </button>
                                         </div>
                                       </div>
                                       <div className="flex items-center gap-4 text-xs">
                                         <div className="text-right">
-                                          <span className="text-catppuccin-overlay1">Toplam: </span>
+                                          <span className="text-catppuccin-overlay1">{t.common.total}: </span>
                                           <span className="font-semibold text-catppuccin-text">
                                             {scan.totalVulns}
                                           </span>
@@ -1122,11 +1124,11 @@ function App() {
                                     <div className="mt-1 ml-4 border-l-2 border-catppuccin-surface0 pl-3">
                                       {loadingImageDetails[scan.filename] ? (
                                         <div className="text-center py-4 text-catppuccin-overlay1 text-xs">
-                                          Yükleniyor...
+                                          {t.common.loading}
                                         </div>
                                       ) : (imageVulnDetails[scan.filename] || []).length === 0 ? (
                                         <div className="text-center py-4 text-catppuccin-overlay1 text-xs">
-                                          Bu raporda açık bulunamadı.
+                                          {t.projectDetail.noVulns}
                                         </div>
                                       ) : (
                                         <div className="space-y-2 max-h-[400px] overflow-y-auto">
@@ -1222,14 +1224,14 @@ function App() {
                   }}
                   className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
                 >
-                  ← Ana Sayfa
+                  ← {t.nav.home}
                 </button>
               </div>
             </div>
           </header>
           <main className="mx-auto max-w-5xl px-4 py-6">
             <div className="flex items-center justify-center h-64">
-              <p className="text-catppuccin-overlay1">Proje seçilmedi veya yükleniyor...</p>
+              <p className="text-catppuccin-overlay1">{t.comparison.noProjectSelected}</p>
             </div>
           </main>
         </div>
@@ -1256,7 +1258,7 @@ function App() {
                   }}
                   className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
                 >
-                  Ana Sayfa
+                  {t.nav.home}
                 </button>
                 <span className="text-catppuccin-overlay1">/</span>
                 <button
@@ -1267,7 +1269,7 @@ function App() {
                   }}
                   className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
                 >
-                  Projeler
+                  {t.nav.projects}
                 </button>
                 <span className="text-catppuccin-overlay1">/</span>
                 <button
@@ -1284,22 +1286,22 @@ function App() {
                 </button>
                 <span className="text-catppuccin-overlay1">/</span>
                 <span className="px-3 py-1.5 rounded bg-catppuccin-teal/10 text-catppuccin-teal font-semibold">
-                  Karşılaştırma
+                  {t.nav.comparison}
                 </span>
               </div>
             </div>
-            <span className="text-xs text-catppuccin-overlay1">DockerScan</span>
+            <span className="text-xs text-catppuccin-overlay1">{t.common.dockscan}</span>
           </div>
         </header>
 
         <main className="mx-auto max-w-6xl px-4 py-6 space-y-6">
           {/* Scan Selection */}
           <section className="bg-catppuccin-mantle/60 border border-catppuccin-surface0 rounded-xl p-6">
-            <h2 className="text-xl font-semibold text-catppuccin-text mb-4">Tarama Seçimi - {projectDetails.projectName}</h2>
+            <h2 className="text-xl font-semibold text-catppuccin-text mb-4">{t.comparison.selectTitle(projectDetails.projectName)}</h2>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-catppuccin-text mb-2">
-                  Scan 1 (İlk Scan / Eski)
+                  {t.comparison.scan1Label}
                 </label>
                 <select
                   value={selectedScan1}
@@ -1310,7 +1312,7 @@ function App() {
                   }}
                   className="w-full px-3 py-2 bg-catppuccin-base border border-catppuccin-surface0 rounded text-catppuccin-text"
                 >
-                  <option value="">Scan seçin...</option>
+                  <option value="">{t.comparison.selectPlaceholder}</option>
                   {projectScans.map((scan) => (
                     <option key={scan.filename} value={scan.filename}>
                       {scan.imageName
@@ -1323,7 +1325,7 @@ function App() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-catppuccin-text mb-2">
-                  Scan 2 (İkinci Scan / Yeni)
+                  {t.comparison.scan2Label}
                 </label>
                 <select
                   value={selectedScan2}
@@ -1334,7 +1336,7 @@ function App() {
                   }}
                   className="w-full px-3 py-2 bg-catppuccin-base border border-catppuccin-surface0 rounded text-catppuccin-text"
                 >
-                  <option value="">Scan seçin...</option>
+                  <option value="">{t.comparison.selectPlaceholder}</option>
                   {projectScans
                     .filter(scan => scan.filename !== selectedScan1)
                     .map((scan) => (
@@ -1352,7 +1354,7 @@ function App() {
                 disabled={!selectedScan1 || !selectedScan2 || comparisonLoading}
                 className="w-full px-4 py-2 bg-catppuccin-blue text-catppuccin-base rounded hover:bg-catppuccin-sapphire disabled:opacity-50 disabled:cursor-not-allowed font-medium"
               >
-                {comparisonLoading ? 'Karşılaştırılıyor...' : 'Karşılaştır'}
+                {comparisonLoading ? t.comparison.comparing : t.comparison.compare}
               </button>
               {comparisonError && (
                 <div className="mt-4 p-4 bg-catppuccin-red/20 border border-catppuccin-red/30 rounded-lg">
@@ -1370,30 +1372,30 @@ function App() {
               <div className="grid grid-cols-4 gap-4">
                 <div className="bg-catppuccin-green/20 border border-catppuccin-green/30 rounded-lg p-4">
                   <div className="text-2xl font-bold text-catppuccin-green">+{comparisonData.summary.added}</div>
-                  <div className="text-xs text-catppuccin-overlay1 mt-1">Yeni Eklenen</div>
+                  <div className="text-xs text-catppuccin-overlay1 mt-1">{t.comparison.added}</div>
                 </div>
                 <div className="bg-catppuccin-red/20 border border-catppuccin-red/30 rounded-lg p-4">
                   <div className="text-2xl font-bold text-catppuccin-red">-{comparisonData.summary.removed}</div>
-                  <div className="text-xs text-catppuccin-overlay1 mt-1">Kapatılan</div>
+                  <div className="text-xs text-catppuccin-overlay1 mt-1">{t.comparison.removed}</div>
                 </div>
                 <div className="bg-catppuccin-yellow/20 border border-catppuccin-yellow/30 rounded-lg p-4">
                   <div className="text-2xl font-bold text-catppuccin-yellow">~{comparisonData.summary.changed}</div>
-                  <div className="text-xs text-catppuccin-overlay1 mt-1">Değişen</div>
+                  <div className="text-xs text-catppuccin-overlay1 mt-1">{t.comparison.changed}</div>
                 </div>
                 <div className="bg-catppuccin-surface0 border border-catppuccin-surface1 rounded-lg p-4">
                   <div className="text-2xl font-bold text-catppuccin-text">={comparisonData.summary.unchanged}</div>
-                  <div className="text-xs text-catppuccin-overlay1 mt-1">Değişmeyen</div>
+                  <div className="text-xs text-catppuccin-overlay1 mt-1">{t.comparison.unchanged}</div>
                 </div>
               </div>
 
               {/* Diff/Meld Style View */}
               <div className="bg-catppuccin-mantle/60 border border-catppuccin-surface0 rounded-xl p-6">
-                <h2 className="text-xl font-semibold text-catppuccin-text mb-4">Karşılaştırma Detayları (Diff/Meld Görünümü)</h2>
+                <h2 className="text-xl font-semibold text-catppuccin-text mb-4">{t.comparison.title}</h2>
                 <div className="grid grid-cols-2 gap-4">
                   {/* Left: Scan 1 (Removed - Red) */}
                   <div className="border border-catppuccin-red/30 rounded-lg p-4 bg-catppuccin-red/5">
                     <div className="text-sm font-semibold text-catppuccin-red mb-3">
-                      Scan 1 - Kaldırılanlar ({comparisonData.summary.removed})
+                      {t.comparison.removedLabel(comparisonData.summary.removed)}
                     </div>
                     <div className="text-xs text-catppuccin-overlay1 mb-2">
                       {comparisonData.scan1.artifactName} - {new Date(comparisonData.scan1.scanDate).toLocaleString()}
@@ -1409,7 +1411,7 @@ function App() {
                         </div>
                       ))}
                       {(!comparisonData.removed || comparisonData.removed.length === 0) && (
-                        <div className="text-xs text-catppuccin-overlay1 text-center py-4">Kaldırılan vulnerability yok</div>
+                        <div className="text-xs text-catppuccin-overlay1 text-center py-4">{t.comparison.noRemoved}</div>
                       )}
                     </div>
                   </div>
@@ -1417,7 +1419,7 @@ function App() {
                   {/* Right: Scan 2 (Added - Green) */}
                   <div className="border border-catppuccin-green/30 rounded-lg p-4 bg-catppuccin-green/5">
                     <div className="text-sm font-semibold text-catppuccin-green mb-3">
-                      Scan 2 - Yeni Eklenenler ({comparisonData.summary.added})
+                      {t.comparison.addedLabel(comparisonData.summary.added)}
                     </div>
                     <div className="text-xs text-catppuccin-overlay1 mb-2">
                       {comparisonData.scan2.artifactName} - {new Date(comparisonData.scan2.scanDate).toLocaleString()}
@@ -1433,7 +1435,7 @@ function App() {
                         </div>
                       ))}
                       {(!comparisonData.added || comparisonData.added.length === 0) && (
-                        <div className="text-xs text-catppuccin-overlay1 text-center py-4">Yeni eklenen vulnerability yok</div>
+                        <div className="text-xs text-catppuccin-overlay1 text-center py-4">{t.comparison.noAdded}</div>
                       )}
                     </div>
                   </div>
@@ -1487,10 +1489,10 @@ function App() {
                 onClick={() => setCurrentPage('dashboard')}
                 className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
               >
-                ← Ana Sayfa
+                ← {t.nav.home}
               </button>
             </div>
-            <span className="text-xs text-catppuccin-overlay1">DockerScan</span>
+            <span className="text-xs text-catppuccin-overlay1">{t.common.dockscan}</span>
           </div>
         </header>
 
@@ -1498,9 +1500,9 @@ function App() {
           <div className="flex flex-col items-center justify-center min-h-[60vh] text-center space-y-6">
             <div className="text-9xl font-bold text-catppuccin-overlay1">404</div>
             <div className="space-y-2">
-              <h1 className="text-3xl font-semibold text-catppuccin-text">Sayfa Bulunamadı</h1>
+              <h1 className="text-3xl font-semibold text-catppuccin-text">{t.notFound.title}</h1>
               <p className="text-catppuccin-overlay1">
-                Aradığınız sayfa mevcut değil veya taşınmış olabilir.
+                {t.notFound.description}
               </p>
             </div>
             <div className="flex gap-4 mt-6">
@@ -1508,13 +1510,13 @@ function App() {
                 onClick={() => setCurrentPage('dashboard')}
                 className="px-6 py-3 rounded-lg border border-catppuccin-blue bg-catppuccin-blue/10 hover:bg-catppuccin-blue/20 text-catppuccin-blue font-medium transition-colors"
               >
-                Ana Sayfaya Dön
+                {t.notFound.goHome}
               </button>
               <button
                 onClick={() => setCurrentPage('projects')}
                 className="px-6 py-3 rounded-lg border border-catppuccin-surface1 hover:bg-catppuccin-surface0 text-catppuccin-text font-medium transition-colors"
               >
-                Projeleri Görüntüle
+                {t.notFound.goProjects}
               </button>
             </div>
           </div>

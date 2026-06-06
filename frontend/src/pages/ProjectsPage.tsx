@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useLanguage, LangToggle } from '../i18n/LanguageContext';
 
 type ProjectSummary = {
   projectName: string;
@@ -73,6 +74,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
   refreshing,
 }) => {
   // Debounced search input to avoid filtering on every keystroke
+  const { t } = useLanguage();
   const [inputValue, setInputValue] = useState(searchQuery);
   
   // CVE search state
@@ -127,7 +129,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       }
     } catch (err) {
       console.error('Failed to search CVE:', err);
-      setCveSearchError(err instanceof Error ? err.message : 'CVE araması başarısız oldu');
+      setCveSearchError(err instanceof Error ? err.message : t.common.error);
       setCveSearchResults(null);
     } finally {
       setCveSearchLoading(false);
@@ -157,12 +159,12 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
               onClick={goDashboard}
               className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
             >
-              ← Ana Sayfa
+              ← {t.nav.home}
             </button>
             <span className="rounded bg-catppuccin-teal/10 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-catppuccin-teal">
               Trivy
             </span>
-            <span className="text-lg font-semibold">Projeler</span>
+            <span className="text-lg font-semibold">{t.nav.projects}</span>
           </div>
           <div className="flex items-center gap-3">
             {onRefresh && (
@@ -170,12 +172,12 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 onClick={onRefresh}
                 disabled={refreshing}
                 className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium disabled:opacity-50"
-                title="Tarama verilerini yenile"
               >
-                {refreshing ? '⟳ Yenileniyor...' : '⟳ Yenile'}
+                {refreshing ? t.common.refreshing : t.common.refresh}
               </button>
             )}
-            <span className="text-xs text-catppuccin-overlay1">DockerScan</span>
+            <LangToggle />
+            <span className="text-xs text-catppuccin-overlay1">{t.common.dockscan}</span>
           </div>
         </div>
       </header>
@@ -183,11 +185,11 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
       <main className="mx-auto max-w-5xl px-4 py-6 space-y-6">
         <section className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-catppuccin-text">Projeler</h2>
+            <h2 className="text-sm font-semibold text-catppuccin-text">{t.nav.projects}</h2>
             <span className="text-xs text-catppuccin-overlay0">
               {cveSearchResults
-                ? `${Array.isArray(cveSearchResults.projects) ? cveSearchResults.projects.length : 0} proje (CVE: ${cveSearchResults.cveId})`
-                : `${Array.isArray(filteredProjects) ? filteredProjects.length : 0} / ${Array.isArray(projects) ? projects.length : 0} proje`}
+                ? t.projects.cveResult(Array.isArray(cveSearchResults.projects) ? cveSearchResults.projects.length : 0, cveSearchResults.cveId)
+                : t.projects.projectCount(Array.isArray(filteredProjects) ? filteredProjects.length : 0, Array.isArray(projects) ? projects.length : 0)}
             </span>
           </div>
 
@@ -195,7 +197,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             <div className="flex gap-2">
               <input
                 type="text"
-                placeholder="Proje ara..."
+                placeholder={t.projects.searchPlaceholder}
                 value={inputValue}
                 onChange={(e) => {
                   setInputValue(e.target.value);
@@ -208,7 +210,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             <div className="flex gap-2">
               <input
                 type="text"
-                placeholder="CVE kodu ara (örn: CVE-2025-59466)"
+                placeholder={t.projects.cveSearchPlaceholder}
                 value={cveSearchQuery}
                 onChange={(e) => setCveSearchQuery(e.target.value)}
                 onKeyDown={handleCVEKeyDown}
@@ -219,7 +221,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                 disabled={cveSearchLoading || !cveSearchQuery.trim()}
                 className="px-4 py-2 rounded-lg border border-catppuccin-surface1 bg-catppuccin-teal/20 hover:bg-catppuccin-teal/30 text-catppuccin-teal font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
-                {cveSearchLoading ? 'Aranıyor...' : 'CVE Ara'}
+                {cveSearchLoading ? t.projects.cveSearching : t.projects.cveSearch}
               </button>
             </div>
           </div>
@@ -235,7 +237,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
             <div className="space-y-4">
               {!Array.isArray(cveSearchResults.projects) || cveSearchResults.projects.length === 0 ? (
                 <div className="flex h-40 items-center justify-center text-sm text-catppuccin-overlay0">
-                  CVE {cveSearchResults.cveId} hiçbir projede bulunamadı.
+                  {t.projects.cveNotFound(cveSearchResults.cveId)}
                 </div>
               ) : (
                 (Array.isArray(cveSearchResults.projects) ? cveSearchResults.projects : []).map((project) => (
@@ -251,7 +253,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                         onClick={() => onSelectProject(project.projectName)}
                         className="px-3 py-1 text-xs rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors"
                       >
-                        Detayları Gör
+                        {t.projects.viewDetails}
                       </button>
                     </div>
                     <div className="space-y-2">
@@ -271,7 +273,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                                 </span>
                               )}
                               <p className="text-xs text-catppuccin-overlay1 mt-1">
-                                {image.scanCount} tarama • Son tarama:{' '}
+                                {image.scanCount} {t.common.scans} • {t.common.lastScan}:{' '}
                                 {new Date(image.latestScan.modifiedAt).toLocaleString()}
                               </p>
                             </div>
@@ -323,8 +325,8 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
           {!cveSearchResults && (!Array.isArray(filteredProjects) || filteredProjects.length === 0) && !loading && !error && (
             <div className="flex h-40 items-center justify-center text-sm text-catppuccin-overlay0">
               {searchQuery
-                ? 'Arama kriterlerine uygun proje bulunamadı.'
-                : 'Henüz proje bulunamadı. export klasörüne JSON dosyası koyduktan sonra sayfayı yenile.'}
+                ? t.projects.noSearchResults
+                : t.projects.noProjects}
             </div>
           )}
 
@@ -356,13 +358,13 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                           {project.projectName}
                         </h3>
                         <p className="text-xs text-catppuccin-overlay1 mt-1">
-                          {project.totalScans} tarama • Son tarama:{' '}
+                          {project.totalScans} {t.common.scans} • {t.common.lastScan}:{' '}
                           {new Date(project.lastScan).toLocaleString()}
                         </p>
                       </div>
                       <div className="flex items-center gap-4">
                         <div className="text-right">
-                          <span className="text-xs text-catppuccin-overlay1">Toplam Açık</span>
+                          <span className="text-xs text-catppuccin-overlay1">{t.common.totalVulns}</span>
                           <p className="text-2xl font-semibold text-catppuccin-text">
                             {latestTotalVulns}
                           </p>

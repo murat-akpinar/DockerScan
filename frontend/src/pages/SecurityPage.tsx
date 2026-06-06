@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useLanguage, LangToggle } from '../i18n/LanguageContext';
 
 type CheckovFinding = {
   checkId: string;
@@ -59,6 +60,7 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
   const [activeTab, setActiveTab] = useState<Tab>('checkov');
   const [checkovScans, setCheckovScans] = useState<CheckovScan[]>([]);
   const [osvScans, setOsvScans] = useState<OsvScan[]>([]);
+  const { t } = useLanguage();
   const [loading, setLoading] = useState(true);
   const [expandedScans, setExpandedScans] = useState<Set<string>>(new Set());
 
@@ -101,14 +103,17 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
               onClick={goDashboard}
               className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
             >
-              Ana Sayfa
+              {t.nav.home}
             </button>
             <span className="text-catppuccin-overlay1">/</span>
             <span className="px-3 py-1.5 rounded bg-catppuccin-teal/10 text-catppuccin-teal font-semibold">
-              Güvenlik Taramaları
+              {t.security.title}
             </span>
           </div>
-          <span className="text-xs text-catppuccin-overlay1">DockerScan</span>
+          <div className="flex items-center gap-2">
+            <LangToggle />
+            <span className="text-xs text-catppuccin-overlay1">{t.common.dockscan}</span>
+          </div>
         </div>
       </header>
 
@@ -117,17 +122,17 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
         <section className="grid gap-4 md:grid-cols-2">
           <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-catppuccin-overlay1">
-              Checkov — IaC Bulguları
+              {t.security.checkovCard}
             </p>
             <p className="mt-2 text-3xl font-semibold text-catppuccin-peach">{checkovTotal}</p>
-            <p className="text-xs text-catppuccin-overlay1 mt-1">{checkovScans.length} tarama dosyası</p>
+            <p className="text-xs text-catppuccin-overlay1 mt-1">{checkovScans.length} {t.security.scanFiles}</p>
           </div>
           <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-catppuccin-overlay1">
-              OSV-Scanner — Bağımlılık Açıkları
+              {t.security.osvCard}
             </p>
             <p className="mt-2 text-3xl font-semibold text-catppuccin-red">{osvTotal}</p>
-            <p className="text-xs text-catppuccin-overlay1 mt-1">{osvScans.length} tarama dosyası</p>
+            <p className="text-xs text-catppuccin-overlay1 mt-1">{osvScans.length} {t.security.scanFiles}</p>
           </div>
         </section>
 
@@ -167,7 +172,7 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
 
         {loading ? (
           <div className="flex items-center justify-center h-40 text-catppuccin-overlay1">
-            Yükleniyor...
+            {t.common.loading}
           </div>
         ) : activeTab === 'checkov' ? (
           <CheckovTab scans={checkovScans} expandedScans={expandedScans} toggle={toggle} />
@@ -184,11 +189,12 @@ const CheckovTab: React.FC<{
   expandedScans: Set<string>;
   toggle: (key: string) => void;
 }> = ({ scans, expandedScans, toggle }) => {
+  const { t } = useLanguage();
   if (scans.length === 0) {
     return (
       <div className="text-center py-12 text-catppuccin-overlay1">
-        Henüz Checkov tarama sonucu yok.
-        <p className="text-xs mt-2">scan-popular.ps1 çalıştırarak veri oluşturabilirsiniz.</p>
+        {t.security.noCheckov}
+        <p className="text-xs mt-2">{t.security.scanHint}</p>
       </div>
     );
   }
@@ -235,7 +241,7 @@ const CheckovTab: React.FC<{
             {isExpanded && (
               <div className="border-t border-catppuccin-surface0 p-4">
                 {scan.findings.length === 0 ? (
-                  <p className="text-sm text-catppuccin-overlay1 text-center py-4">Başarısız bulgu yok.</p>
+                  <p className="text-sm text-catppuccin-overlay1 text-center py-4">{t.security.noFindings}</p>
                 ) : (
                   <div className="space-y-2 max-h-80 overflow-y-auto">
                     {scan.findings.map((f, i) => (
@@ -267,11 +273,12 @@ const OsvTab: React.FC<{
   expandedScans: Set<string>;
   toggle: (key: string) => void;
 }> = ({ scans, expandedScans, toggle }) => {
+  const { t } = useLanguage();
   if (scans.length === 0) {
     return (
       <div className="text-center py-12 text-catppuccin-overlay1">
-        Henüz OSV-Scanner tarama sonucu yok.
-        <p className="text-xs mt-2">scan-popular.ps1 çalıştırarak veri oluşturabilirsiniz.</p>
+        {t.security.noOsv}
+        <p className="text-xs mt-2">{t.security.scanHint}</p>
       </div>
     );
   }
@@ -306,7 +313,7 @@ const OsvTab: React.FC<{
               </div>
               <div className="flex items-center gap-3 text-sm">
                 <span className={`font-semibold ${scan.totalVulns > 0 ? 'text-catppuccin-red' : 'text-catppuccin-green'}`}>
-                  {scan.totalVulns} açık
+                  {scan.totalVulns} {t.security.vulns}
                 </span>
                 <span className={`text-catppuccin-subtext0 transition-transform select-none ${isExpanded ? 'rotate-180' : ''}`}>▾</span>
               </div>
@@ -315,7 +322,7 @@ const OsvTab: React.FC<{
             {isExpanded && (
               <div className="border-t border-catppuccin-surface0 p-4 space-y-4">
                 {scan.sources.length === 0 ? (
-                  <p className="text-sm text-catppuccin-overlay1 text-center py-4">Açık bulunamadı.</p>
+                  <p className="text-sm text-catppuccin-overlay1 text-center py-4">{t.security.noVulns}</p>
                 ) : (
                   scan.sources.map((source, si) => (
                     <div key={si}>
@@ -334,7 +341,7 @@ const OsvTab: React.FC<{
                                 </span>
                               </div>
                               <span className="text-xs text-catppuccin-red font-semibold shrink-0">
-                                {pkg.vulnCount} açık
+                                {pkg.vulnCount} {t.security.vulns}
                               </span>
                             </div>
                             <div className="mt-2 space-y-1">
