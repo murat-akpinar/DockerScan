@@ -967,11 +967,92 @@ func computeAllowedOrigins() []string {
 	return allowedOrigins
 }
 
+type rootStrings struct {
+	htmlLang    string
+	subtitle    string
+	thMethod    string
+	thEndpoint  string
+	thDesc      string
+	health      string
+	reload      string
+	scans       string
+	scanDetail  string
+	projects    string
+	projectDet  string
+	imageScans  string
+	grades      string
+	compare     string
+	cve         string
+	checkov     string
+	osv         string
+}
+
+var rootTR = rootStrings{
+	htmlLang:   "tr",
+	subtitle:   "Tüm endpoint'ler aşağıda listelenmiştir.",
+	thMethod:   "Metod",
+	thEndpoint: "Endpoint",
+	thDesc:     "Açıklama",
+	health:     "Backend sağlık kontrolü",
+	reload:     "Export klasörünü yeniden tara, index'i güncelle",
+	scans:      "Tüm Trivy tarama özetleri",
+	scanDetail: "Belirli bir taramanın zafiyet detayları",
+	projects:   "Tüm projelerin özet listesi",
+	projectDet: "Projeye ait imaj ve tarama detayları",
+	imageScans: "İmaja ait tarama geçmişi",
+	grades:     "Proje/imaj bazlı güvenlik notu (A–F)",
+	compare:    "İki taramayı karşılaştır",
+	cve:        "CVE ID'ye göre hangi taramalarda geçtiğini göster",
+	checkov:    "Checkov IaC tarama sonuçları",
+	osv:        "OSV-Scanner bağımlılık zafiyet sonuçları",
+}
+
+var rootEN = rootStrings{
+	htmlLang:   "en",
+	subtitle:   "All endpoints are listed below.",
+	thMethod:   "Method",
+	thEndpoint: "Endpoint",
+	thDesc:     "Description",
+	health:     "Backend health check",
+	reload:     "Rescan export directory and rebuild the index",
+	scans:      "All Trivy scan summaries",
+	scanDetail: "Vulnerability details for a specific scan",
+	projects:   "Summary list of all projects",
+	projectDet: "Images and scan details for a project",
+	imageScans: "Scan history for a specific image",
+	grades:     "Security grade per project/image (A–F)",
+	compare:    "Compare two scans",
+	cve:        "Show which scans contain a given CVE ID",
+	checkov:    "Checkov IaC scan results",
+	osv:        "OSV-Scanner dependency vulnerability results",
+}
+
+func detectLang(r *http.Request) string {
+	if l := r.URL.Query().Get("lang"); l == "en" || l == "tr" {
+		return l
+	}
+	accept := r.Header.Get("Accept-Language")
+	if strings.HasPrefix(accept, "en") {
+		return "en"
+	}
+	return "tr"
+}
+
 func handleRoot(w http.ResponseWriter, r *http.Request) {
+	lang := detectLang(r)
+	s := rootTR
+	altLang := "en"
+	altLabel := "EN"
+	if lang == "en" {
+		s = rootEN
+		altLang = "tr"
+		altLabel = "TR"
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`<!DOCTYPE html>
-<html lang="tr">
+	_, _ = fmt.Fprintf(w, `<!DOCTYPE html>
+<html lang="%s">
 <head>
 <meta charset="UTF-8">
 <title>DockScan API</title>
@@ -979,93 +1060,126 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
   body { font-family: monospace; background: #1e1e2e; color: #cdd6f4; margin: 2rem; }
   h1   { color: #89b4fa; margin-bottom: 0.25rem; }
   p    { color: #6c7086; margin-top: 0; }
-  table { border-collapse: collapse; width: 100%; max-width: 800px; margin-top: 1.5rem; }
+  table { border-collapse: collapse; width: 100%%; max-width: 800px; margin-top: 1.5rem; }
   th   { text-align: left; color: #a6adc8; font-size: 0.75rem; text-transform: uppercase;
          letter-spacing: 0.05em; padding: 0.4rem 0.75rem; border-bottom: 1px solid #313244; }
   td   { padding: 0.4rem 0.75rem; border-bottom: 1px solid #1e1e2e; font-size: 0.875rem; }
   tr:hover td { background: #313244; }
-  .method-get  { color: #a6e3a1; }
-  .method-post { color: #fab387; }
   a    { color: #89dceb; text-decoration: none; }
   a:hover { text-decoration: underline; }
   .badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 0.25rem;
            font-size: 0.7rem; margin-right: 0.5rem; }
   .bg-get  { background: #a6e3a1; color: #1e1e2e; }
   .bg-post { background: #fab387; color: #1e1e2e; }
+  .lang-toggle { float: right; display: flex; gap: 0.4rem; margin-top: 0.2rem; }
+  .lang-btn { padding: 0.2rem 0.6rem; border-radius: 0.25rem; font-size: 0.75rem;
+              border: 1px solid #313244; background: #313244; color: #cdd6f4;
+              cursor: pointer; text-decoration: none; }
+  .lang-btn.active { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }
 </style>
 </head>
 <body>
+<div class="lang-toggle">
+  <a class="lang-btn%s" href="/?lang=tr">TR</a>
+  <a class="lang-btn%s" href="/?lang=en">EN</a>
+</div>
 <h1>DockScan Backend API</h1>
-<p>Tüm endpoint'ler aşağıda listelenmiştir.</p>
+<p>%s</p>
 <table>
   <thead>
-    <tr><th>Metod</th><th>Endpoint</th><th>Açıklama</th></tr>
+    <tr><th>%s</th><th>%s</th><th>%s</th></tr>
   </thead>
   <tbody>
     <tr>
       <td><span class="badge bg-get">GET</span></td>
       <td><a href="/health">/health</a></td>
-      <td>Backend sağlık kontrolü</td>
+      <td>%s</td>
     </tr>
     <tr>
       <td><span class="badge bg-post">POST</span></td>
       <td>/api/reload</td>
-      <td>Export klasörünü yeniden tara, index'i güncelle</td>
+      <td>%s</td>
     </tr>
     <tr>
       <td><span class="badge bg-get">GET</span></td>
       <td><a href="/api/scans">/api/scans</a></td>
-      <td>Tüm Trivy tarama özetleri</td>
+      <td>%s</td>
     </tr>
     <tr>
       <td><span class="badge bg-get">GET</span></td>
       <td>/api/scans/{path}</td>
-      <td>Belirli bir taramanın zafiyet detayları</td>
+      <td>%s</td>
     </tr>
     <tr>
       <td><span class="badge bg-get">GET</span></td>
       <td><a href="/api/projects">/api/projects</a></td>
-      <td>Tüm projelerin özet listesi</td>
+      <td>%s</td>
     </tr>
     <tr>
       <td><span class="badge bg-get">GET</span></td>
       <td>/api/projects/{project}</td>
-      <td>Projeye ait imaj ve tarama detayları</td>
+      <td>%s</td>
     </tr>
     <tr>
       <td><span class="badge bg-get">GET</span></td>
       <td>/api/projects/{project}/images/{image}/scans</td>
-      <td>İmaja ait tarama geçmişi</td>
+      <td>%s</td>
     </tr>
     <tr>
       <td><span class="badge bg-get">GET</span></td>
       <td><a href="/api/grades">/api/grades</a></td>
-      <td>Proje/imaj bazlı güvenlik notu (A–F) &nbsp;<code>?project=</code></td>
+      <td>%s &nbsp;<code>?project=</code></td>
     </tr>
     <tr>
       <td><span class="badge bg-get">GET</span></td>
       <td>/api/compare</td>
-      <td>İki taramayı karşılaştır &nbsp;<code>?scan1=&amp;scan2=</code></td>
+      <td>%s &nbsp;<code>?scan1=&amp;scan2=</code></td>
     </tr>
     <tr>
       <td><span class="badge bg-get">GET</span></td>
       <td>/api/cve/{cveId}</td>
-      <td>CVE ID'ye göre hangi taramalarda geçtiğini göster</td>
+      <td>%s</td>
     </tr>
     <tr>
       <td><span class="badge bg-get">GET</span></td>
       <td><a href="/api/checkov">/api/checkov</a></td>
-      <td>Checkov IaC tarama sonuçları &nbsp;<code>?project=</code></td>
+      <td>%s &nbsp;<code>?project=</code></td>
     </tr>
     <tr>
       <td><span class="badge bg-get">GET</span></td>
       <td><a href="/api/osv">/api/osv</a></td>
-      <td>OSV-Scanner bağımlılık zafiyet sonuçları &nbsp;<code>?project=</code></td>
+      <td>%s &nbsp;<code>?project=</code></td>
     </tr>
   </tbody>
 </table>
 </body>
-</html>`))
+</html>`,
+		s.htmlLang,
+		trActiveClass(lang == "tr"), trActiveClass(lang == "en"),
+		s.subtitle,
+		s.thMethod, s.thEndpoint, s.thDesc,
+		s.health,
+		s.reload,
+		s.scans,
+		s.scanDetail,
+		s.projects,
+		s.projectDet,
+		s.imageScans,
+		s.grades,
+		s.compare,
+		s.cve,
+		s.checkov,
+		s.osv,
+	)
+	_ = altLang
+	_ = altLabel
+}
+
+func trActiveClass(active bool) string {
+	if active {
+		return " active"
+	}
+	return ""
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
