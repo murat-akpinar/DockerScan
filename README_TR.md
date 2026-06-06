@@ -111,6 +111,8 @@ Invoke-RestMethod -Method POST "http://localhost:3018/api/reload"
 
 ### CI/CD Entegrasyonu — `trigger-nexus.sh`
 
+> Pipeline içinde Trivy taramasını otomatikleştiren Jenkins Shared Library için [devops-jenkins-library](https://github.com/murat-akpinar/devops-jenkins-library) reposuna bakabilirsiniz.
+
 Jenkins pipeline'ında build alınan her imaj için sunucuya SSH ile bağlanıp `trigger-nexus.sh` çalıştırılır. Script yalnızca belirtilen imajı tarar, tüm Nexus'u değil.
 
 ```bash

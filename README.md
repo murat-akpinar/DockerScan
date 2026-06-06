@@ -111,6 +111,8 @@ Invoke-RestMethod -Method POST "http://localhost:3018/api/reload"
 
 ### CI/CD Integration — `trigger-nexus.sh`
 
+> For the Jenkins Shared Library that automates Trivy scanning inside pipelines, see [devops-jenkins-library](https://github.com/murat-akpinar/devops-jenkins-library).
+
 In a Jenkins pipeline, SSH into the server and run `trigger-nexus.sh` for each built image. The script scans only the specified image, not the entire Nexus registry.
 
 ```bash
