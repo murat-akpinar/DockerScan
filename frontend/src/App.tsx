@@ -15,6 +15,7 @@ import {
 } from 'recharts';
 import ProjectsPage from './pages/ProjectsPage';
 import DashboardPage from './pages/DashboardPage';
+import SecurityPage from './pages/SecurityPage';
 import TimelineTooltip from './components/TimelineTooltip';
 
 type ProjectSummary = {
@@ -125,7 +126,7 @@ type ComparisonResult = {
 const API_BASE =
   import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? 'http://localhost:8180' : '');
 
-type Page = 'dashboard' | 'projects' | 'project-detail' | 'project-comparison' | 'not-found';
+type Page = 'dashboard' | 'projects' | 'project-detail' | 'project-comparison' | 'security' | 'not-found';
 
 type ProjectAggregatedStats = {
   totalVulns: number;
@@ -210,6 +211,8 @@ function getInitialPage(): Page {
       return 'projects';
     } else if (path.startsWith('/projects/')) {
       return 'project-detail';
+    } else if (path === '/security') {
+      return 'security';
     } else {
       return 'not-found';
     }
@@ -265,6 +268,8 @@ function App() {
         const projectName = decodeURIComponent(newPath.slice('/projects/'.length));
         setSelectedProject(projectName);
         setCurrentPage('project-detail');
+      } else if (newPath === '/security') {
+        setCurrentPage('security');
       } else if (!newPath.startsWith('/api/') && newPath !== '/index.html') {
         setCurrentPage('not-found');
       }
@@ -288,6 +293,10 @@ function App() {
       const target = `/projects/${encodeURIComponent(selectedProject)}`;
       if (window.location.pathname !== target) {
         window.history.pushState({}, '', target);
+      }
+    } else if (currentPage === 'security') {
+      if (window.location.pathname !== '/security') {
+        window.history.pushState({}, '', '/security');
       }
     }
   }, [currentPage, selectedProject]);
@@ -1436,6 +1445,15 @@ function App() {
     );
   }
 
+  if (currentPage === 'security') {
+    return (
+      <SecurityPage
+        apiBase={API_BASE}
+        goDashboard={() => setCurrentPage('dashboard')}
+      />
+    );
+  }
+
   if (currentPage === 'projects') {
     return (
       <ProjectsPage
@@ -1519,6 +1537,7 @@ function App() {
       loading={loading}
       error={error}
       onGoProjects={() => setCurrentPage('projects')}
+      onGoSecurity={() => setCurrentPage('security')}
       onOpenProject={(projectName) => {
         setSelectedProject(projectName);
         setCurrentPage('project-detail');

@@ -96,6 +96,101 @@ foreach ($t in $targets) {
 }
 $swAll.Stop()
 
+# ---------------------------------------------------------------------------
+# Checkov — proje Dockerfile'larını tara
+# ---------------------------------------------------------------------------
+Write-Host "`n== Checkov IaC Taraması ==" -ForegroundColor Cyan
+
+$checkovImage   = 'bridgecrew/checkov:latest'
+$checkovTargets = @(
+    @{ proj = 'dockscan'; service = 'dockscan_backend'; path = 'backend' }
+    @{ proj = 'dockscan'; service = 'dockscan_nginx';   path = 'nginx'   }
+)
+$checkovOk = 0; $checkovFail = 0
+
+foreach ($t in $checkovTargets) {
+    $outDir  = Join-Path $exportRoot $t.proj
+    $srcPath = Join-Path $root $t.path
+    New-Item -ItemType Directory -Force $outDir | Out-Null
+
+    $ts      = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $outFile = Join-Path $outDir "checkov-$($t.service)-local-$ts.json"
+
+    Write-Host ("  [Checkov] {0}" -f $t.service) -ForegroundColor Yellow
+
+    if (-not (Test-Path $srcPath)) {
+        Write-Host "    ATLANDI — dizin bulunamadı: $srcPath" -ForegroundColor DarkYellow
+        continue
+    }
+
+    $checkovOut = & docker run --rm `
+        -v "${srcPath}:/project" `
+        $checkovImage `
+        --directory /project `
+        --output json `
+        --quiet
+    $exit = $LASTEXITCODE
+    $checkovOut | Out-File -FilePath $outFile -Encoding utf8
+
+    if ($exit -eq 0) {
+        $checkovOk++
+        Write-Host "    Temiz" -ForegroundColor Green
+    } elseif ($exit -eq 1) {
+        $checkovOk++
+        Write-Host "    Bulgular var (dashboard'da goruntulenecek)" -ForegroundColor Yellow
+    } else {
+        $checkovFail++
+        Write-Host "    HATA (kod: $exit)" -ForegroundColor Red
+    }
+}
+
+# ---------------------------------------------------------------------------
+# OSV-Scanner — bağımlılık dosyalarını tara
+# ---------------------------------------------------------------------------
+Write-Host "`n== OSV-Scanner Bağımlılık Taraması ==" -ForegroundColor Cyan
+
+$osvImage   = 'ghcr.io/google/osv-scanner:latest'
+$osvTargets = @(
+    @{ proj = 'dockscan'; service = 'dockscan_backend';  path = 'backend'  }
+    @{ proj = 'dockscan'; service = 'dockscan_frontend'; path = 'frontend' }
+)
+$osvOk = 0; $osvFail = 0
+
+foreach ($t in $osvTargets) {
+    $outDir  = Join-Path $exportRoot $t.proj
+    $srcPath = Join-Path $root $t.path
+    New-Item -ItemType Directory -Force $outDir | Out-Null
+
+    $ts      = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $outFile = Join-Path $outDir "osv-$($t.service)-local-$ts.json"
+
+    Write-Host ("  [OSV] {0}" -f $t.service) -ForegroundColor Yellow
+
+    if (-not (Test-Path $srcPath)) {
+        Write-Host "    ATLANDI — dizin bulunamadı: $srcPath" -ForegroundColor DarkYellow
+        continue
+    }
+
+    $osvOut = & docker run --rm `
+        -v "${srcPath}:/src" `
+        $osvImage `
+        --recursive /src `
+        --format json
+    $exit = $LASTEXITCODE
+    $osvOut | Out-File -FilePath $outFile -Encoding utf8
+
+    if ($exit -eq 0) {
+        $osvOk++
+        Write-Host "    Temiz" -ForegroundColor Green
+    } elseif ($exit -eq 1) {
+        $osvOk++
+        Write-Host "    Zafiyetler var (dashboard'da goruntulenecek)" -ForegroundColor Yellow
+    } else {
+        $osvFail++
+        Write-Host "    HATA (kod: $exit)" -ForegroundColor Red
+    }
+}
+
 # Index'i hemen yenile
 Write-Host "`nIndex yenileniyor..." -ForegroundColor Cyan
 try { Invoke-RestMethod -Method POST "$Dashboard/api/reload" -TimeoutSec 30 | Out-Null } catch {
@@ -117,8 +212,10 @@ function Measure-Endpoint($path) {
 
 # Özet
 Write-Host "`n== Tarama Ozeti ==" -ForegroundColor Cyan
-Write-Host ("Toplam: {0}  Basarili: {1}  Hata: {2}  Sure: {3:n0} sn" -f `
+Write-Host ("Trivy   - Toplam: {0}  Basarili: {1}  Hata: {2}  Sure: {3:n0} sn" -f `
         $grandTotal, $ok, $fail, $swAll.Elapsed.TotalSeconds)
+Write-Host ("Checkov - Basarili: {0}  Hata: {1}" -f $checkovOk, $checkovFail)
+Write-Host ("OSV     - Basarili: {0}  Hata: {1}" -f $osvOk, $osvFail)
 
 $jsons = Get-ChildItem $exportRoot -Recurse -Filter *.json -ErrorAction SilentlyContinue
 $sizeMB = [math]::Round((($jsons | Measure-Object Length -Sum).Sum / 1MB), 1)

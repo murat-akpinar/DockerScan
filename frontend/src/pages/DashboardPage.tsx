@@ -54,6 +54,7 @@ type DashboardPageProps = {
   loading: boolean;
   error: string | null;
   onGoProjects: () => void;
+  onGoSecurity: () => void;
   onOpenProject: (projectName: string) => void;
   onRefresh?: () => void;
   refreshing?: boolean;
@@ -72,6 +73,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
   loading,
   error,
   onGoProjects,
+  onGoSecurity,
   onOpenProject,
   onRefresh,
   refreshing,
@@ -98,6 +100,12 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
               className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
             >
               Projeler →
+            </button>
+            <button
+              onClick={onGoSecurity}
+              className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
+            >
+              Güvenlik →
             </button>
             <span className="rounded bg-catppuccin-teal/10 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-catppuccin-teal">
               Trivy
