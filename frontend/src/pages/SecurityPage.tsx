@@ -56,6 +56,66 @@ type SecurityPageProps = {
   goDashboard: () => void;
 };
 
+// ── Grade helpers ─────────────────────────────────────────────────────────────
+// Checkov: IaC miskonfigürasyon sayısına göre
+// A: 0  B: ≤2  C: ≤5  D: ≤10  F: >10
+function checkovGrade(failed: number): string {
+  if (failed === 0) return 'A';
+  if (failed <= 2)  return 'B';
+  if (failed <= 5)  return 'C';
+  if (failed <= 10) return 'D';
+  return 'F';
+}
+
+// OSV: bağımlılık zafiyet sayısına göre (Trivy ile aynı eşikler)
+// A: 0  B: ≤2  C: ≤5  D: ≤9  F: ≥10
+function osvGrade(totalVulns: number): string {
+  if (totalVulns === 0) return 'A';
+  if (totalVulns <= 2)  return 'B';
+  if (totalVulns <= 5)  return 'C';
+  if (totalVulns <= 9)  return 'D';
+  return 'F';
+}
+
+const GRADE_ORDER: Record<string, number> = { A: 0, B: 1, C: 2, D: 3, F: 4 };
+
+function worstGrade(grades: string[]): string {
+  return grades.reduce((w, g) => (GRADE_ORDER[g] ?? 0) > (GRADE_ORDER[w] ?? 0) ? g : w, 'A');
+}
+
+function gradeColorClass(grade: string): string {
+  if (grade === 'A') return 'catppuccin-green';
+  if (grade === 'B') return 'catppuccin-blue';
+  if (grade === 'C') return 'catppuccin-yellow';
+  return 'catppuccin-red';
+}
+
+// ── Grade badge (birebir App.tsx ile aynı) ────────────────────────────────────
+const GradeBadge: React.FC<{ grade: string; size?: 'lg' | 'sm' }> = ({ grade, size = 'lg' }) => {
+  const color = gradeColorClass(grade);
+  const dim = size === 'lg' ? 'w-16 h-16 text-2xl' : 'w-10 h-10 text-sm';
+  const bg =
+    color === 'catppuccin-green'  ? 'bg-catppuccin-green/20  text-catppuccin-green'  :
+    color === 'catppuccin-blue'   ? 'bg-catppuccin-blue/20   text-catppuccin-blue'   :
+    color === 'catppuccin-yellow' ? 'bg-catppuccin-yellow/20 text-catppuccin-yellow' :
+                                    'bg-catppuccin-red/20    text-catppuccin-red';
+  return (
+    <div className={`${dim} rounded-lg flex items-center justify-center font-bold shrink-0 ${bg}`}>
+      {grade}
+    </div>
+  );
+};
+
+// ── Card border class based on grade ─────────────────────────────────────────
+function gradeBorderClass(grade: string): string {
+  const color = gradeColorClass(grade);
+  if (color === 'catppuccin-green')  return 'border-catppuccin-green  bg-catppuccin-green/10';
+  if (color === 'catppuccin-blue')   return 'border-catppuccin-blue   bg-catppuccin-blue/10';
+  if (color === 'catppuccin-yellow') return 'border-catppuccin-yellow bg-catppuccin-yellow/10';
+  return 'border-catppuccin-red bg-catppuccin-red/10';
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => {
   const [activeTab, setActiveTab] = useState<Tab>('checkov');
   const [checkovScans, setCheckovScans] = useState<CheckovScan[]>([]);
@@ -100,30 +160,42 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
   }, [checkovScans, osvScans]);
 
   const projectStats = useMemo(() => {
-    const stats: Record<string, { checkovFailed: number; osvVulns: number; lastScan: string }> = {};
+    const stats: Record<string, {
+      checkovFailed: number;
+      osvVulns: number;
+      lastScan: string;
+      grade: string;
+    }> = {};
     for (const name of projectNames) {
       const checkov = checkovScans.filter((s) => s.projectName === name);
       const osv = osvScans.filter((s) => s.projectName === name);
       const failed = checkov.reduce((sum, s) => sum + s.failed, 0);
-      const vulns = osv.reduce((sum, s) => sum + s.totalVulns, 0);
+      const vulns  = osv.reduce((sum, s) => sum + s.totalVulns, 0);
       const allDates = [
         ...checkov.map((s) => s.scannedAt),
         ...osv.map((s) => s.scannedAt),
-      ]
-        .filter(Boolean)
-        .sort()
-        .reverse();
-      stats[name] = { checkovFailed: failed, osvVulns: vulns, lastScan: allDates[0] || '' };
+      ].filter(Boolean).sort().reverse();
+
+      const grades = [
+        ...checkov.map((s) => checkovGrade(s.failed)),
+        ...osv.map((s) => osvGrade(s.totalVulns)),
+      ];
+      stats[name] = {
+        checkovFailed: failed,
+        osvVulns: vulns,
+        lastScan: allDates[0] || '',
+        grade: grades.length > 0 ? worstGrade(grades) : 'A',
+      };
     }
     return stats;
   }, [projectNames, checkovScans, osvScans]);
 
-  // ── Project detail view ──────────────────────────────────────────────────
+  // ── Project detail view ────────────────────────────────────────────────────
   if (selectedProject) {
     const filteredCheckov = checkovScans.filter((s) => s.projectName === selectedProject);
-    const filteredOsv = osvScans.filter((s) => s.projectName === selectedProject);
-    const checkovTotal = filteredCheckov.reduce((s, c) => s + c.failed, 0);
-    const osvTotal = filteredOsv.reduce((s, o) => s + o.totalVulns, 0);
+    const filteredOsv     = osvScans.filter((s) => s.projectName === selectedProject);
+    const checkovTotal    = filteredCheckov.reduce((s, c) => s + c.failed, 0);
+    const osvTotal        = filteredOsv.reduce((s, o) => s + o.totalVulns, 0);
 
     return (
       <div className="min-h-screen bg-catppuccin-base text-catppuccin-text">
@@ -220,7 +292,7 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
     );
   }
 
-  // ── Project list view (same design as ProjectsPage) ──────────────────────
+  // ── Project list view ──────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-catppuccin-base text-catppuccin-text">
       <header className="border-b border-catppuccin-surface0 bg-catppuccin-mantle/70 backdrop-blur">
@@ -270,7 +342,7 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
                     key={name}
                     role="button"
                     tabIndex={0}
-                    className="border border-catppuccin-surface0 rounded-lg p-4 bg-catppuccin-base/60 hover:bg-catppuccin-mantle/40 cursor-pointer transition-colors"
+                    className={`border rounded-lg p-4 cursor-pointer hover:opacity-90 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-catppuccin-blue ${gradeBorderClass(stats.grade)}`}
                     onClick={() => setSelectedProject(name)}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
@@ -280,13 +352,16 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
                     }}
                   >
                     <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="text-lg font-semibold text-catppuccin-text">{name}</h3>
-                        {stats.lastScan && (
-                          <p className="text-xs text-catppuccin-overlay1 mt-1">
-                            {t.common.lastScan}: {new Date(stats.lastScan).toLocaleString()}
-                          </p>
-                        )}
+                      <div className="flex items-center gap-3">
+                        <GradeBadge grade={stats.grade} size="lg" />
+                        <div>
+                          <h3 className="text-base font-semibold text-catppuccin-text">{name}</h3>
+                          {stats.lastScan && (
+                            <p className="text-xs text-catppuccin-overlay1 mt-1">
+                              {t.common.lastScan}: {new Date(stats.lastScan).toLocaleString()}
+                            </p>
+                          )}
+                        </div>
                       </div>
                       <div className="flex items-center gap-6">
                         {stats.checkovFailed > 0 && (
@@ -321,7 +396,7 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
   );
 };
 
-// ── Checkov Tab ──────────────────────────────────────────────────────────────
+// ── Checkov Tab ───────────────────────────────────────────────────────────────
 const CheckovTab: React.FC<{
   scans: CheckovScan[];
   expandedScans: Set<string>;
@@ -338,57 +413,61 @@ const CheckovTab: React.FC<{
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {scans.map((scan) => {
         const isExpanded = expandedScans.has(scan.filename);
-        const hasFindings = scan.failed > 0;
+        const grade = checkovGrade(scan.failed);
         return (
-          <div
-            key={scan.filename}
-            className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 overflow-hidden"
-          >
+          <div key={scan.filename} className="space-y-0">
             <div
               role="button"
               tabIndex={0}
               onClick={() => toggle(scan.filename)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') toggle(scan.filename);
-              }}
-              className="flex items-center justify-between p-4 cursor-pointer hover:bg-catppuccin-surface0/30 transition-colors"
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggle(scan.filename); }}
+              aria-expanded={isExpanded}
+              className={`border rounded-lg p-4 cursor-pointer hover:opacity-90 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-catppuccin-blue ${gradeBorderClass(grade)}`}
             >
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-catppuccin-text">
-                    {scan.serviceName}
-                  </span>
-                  {scan.tag && (
-                    <span className="text-xs px-2 py-0.5 rounded bg-catppuccin-surface0 text-catppuccin-overlay1">
-                      {scan.tag}
-                    </span>
-                  )}
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  <GradeBadge grade={grade} size="lg" />
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-base font-semibold text-catppuccin-text">
+                        {scan.serviceName}
+                      </span>
+                      {scan.tag && (
+                        <span className="text-xs px-2 py-0.5 rounded bg-catppuccin-surface0 text-catppuccin-overlay1">
+                          {scan.tag}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-catppuccin-overlay1 mt-0.5">
+                      {new Date(scan.scannedAt).toLocaleString()}
+                    </p>
+                  </div>
                 </div>
-                <p className="text-xs text-catppuccin-overlay1 mt-0.5">
-                  {new Date(scan.scannedAt).toLocaleString()}
-                </p>
+                <div className="flex items-center gap-4 text-sm">
+                  <div className="text-right">
+                    <span className="text-catppuccin-overlay1 text-xs">{t.common.total}: </span>
+                    <span className="font-bold text-lg text-catppuccin-text">{scan.failed}</span>
+                  </div>
+                  <div className="flex gap-3">
+                    <span className="text-catppuccin-green font-semibold">✓ {scan.passed}</span>
+                    <span className={`font-semibold ${scan.failed > 0 ? 'text-catppuccin-red' : 'text-catppuccin-overlay1'}`}>
+                      ✗ {scan.failed}
+                    </span>
+                    <span className="text-catppuccin-overlay1 text-xs">~ {scan.skipped}</span>
+                  </div>
+                </div>
               </div>
-              <div className="flex items-center gap-4 text-sm">
-                <span className="text-catppuccin-green font-medium">✓ {scan.passed}</span>
-                <span
-                  className={`font-medium ${hasFindings ? 'text-catppuccin-red' : 'text-catppuccin-overlay1'}`}
-                >
-                  ✗ {scan.failed}
-                </span>
-                <span className="text-catppuccin-overlay1 text-xs">~ {scan.skipped}</span>
-                <span
-                  className={`text-catppuccin-subtext0 transition-transform select-none ${isExpanded ? 'rotate-180' : ''}`}
-                >
-                  ▾
-                </span>
+              <div className="flex items-center gap-1 text-xs text-catppuccin-subtext0 select-none">
+                <span>{isExpanded ? t.projectDetail.hideScanHistory : t.projectDetail.showScanHistory}</span>
+                <span className={`inline-block transition-transform ${isExpanded ? 'rotate-180' : ''}`} aria-hidden="true">▾</span>
               </div>
             </div>
 
             {isExpanded && (
-              <div className="border-t border-catppuccin-surface0 p-4">
+              <div className="mt-2 border border-catppuccin-surface0 rounded-lg p-4 bg-catppuccin-mantle/60">
                 {scan.findings.length === 0 ? (
                   <p className="text-sm text-catppuccin-overlay1 text-center py-4">
                     {t.security.noFindings}
@@ -396,15 +475,11 @@ const CheckovTab: React.FC<{
                 ) : (
                   <div className="space-y-2 max-h-80 overflow-y-auto">
                     {scan.findings.map((f, i) => (
-                      <div
-                        key={i}
-                        className="border border-catppuccin-red/30 rounded-lg p-3 bg-catppuccin-red/5"
-                      >
+                      <div key={i} className="border border-catppuccin-red/30 rounded-lg p-3 bg-catppuccin-red/5">
                         <div className="flex items-start justify-between gap-2">
                           <span className="font-mono text-xs text-catppuccin-teal">{f.checkId}</span>
                           <span className="text-xs text-catppuccin-overlay1 shrink-0">
-                            {f.filePath}
-                            {f.line > 0 ? `:${f.line}` : ''}
+                            {f.filePath}{f.line > 0 ? `:${f.line}` : ''}
                           </span>
                         </div>
                         {f.name && <p className="text-xs text-catppuccin-text mt-1">{f.name}</p>}
@@ -421,7 +496,7 @@ const CheckovTab: React.FC<{
   );
 };
 
-// ── OSV Tab ──────────────────────────────────────────────────────────────────
+// ── OSV Tab ───────────────────────────────────────────────────────────────────
 const OsvTab: React.FC<{
   scans: OsvScan[];
   expandedScans: Set<string>;
@@ -438,54 +513,59 @@ const OsvTab: React.FC<{
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {scans.map((scan) => {
         const isExpanded = expandedScans.has(scan.filename);
+        const grade = osvGrade(scan.totalVulns);
         return (
-          <div
-            key={scan.filename}
-            className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 overflow-hidden"
-          >
+          <div key={scan.filename} className="space-y-0">
             <div
               role="button"
               tabIndex={0}
               onClick={() => toggle(scan.filename)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') toggle(scan.filename);
-              }}
-              className="flex items-center justify-between p-4 cursor-pointer hover:bg-catppuccin-surface0/30 transition-colors"
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggle(scan.filename); }}
+              aria-expanded={isExpanded}
+              className={`border rounded-lg p-4 cursor-pointer hover:opacity-90 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-catppuccin-blue ${gradeBorderClass(grade)}`}
             >
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-catppuccin-text">
-                    {scan.serviceName}
-                  </span>
-                  {scan.tag && (
-                    <span className="text-xs px-2 py-0.5 rounded bg-catppuccin-surface0 text-catppuccin-overlay1">
-                      {scan.tag}
-                    </span>
-                  )}
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  <GradeBadge grade={grade} size="lg" />
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-base font-semibold text-catppuccin-text">
+                        {scan.serviceName}
+                      </span>
+                      {scan.tag && (
+                        <span className="text-xs px-2 py-0.5 rounded bg-catppuccin-surface0 text-catppuccin-overlay1">
+                          {scan.tag}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-catppuccin-overlay1 mt-0.5">
+                      {new Date(scan.scannedAt).toLocaleString()}
+                    </p>
+                  </div>
                 </div>
-                <p className="text-xs text-catppuccin-overlay1 mt-0.5">
-                  {new Date(scan.scannedAt).toLocaleString()}
-                </p>
+                <div className="flex items-center gap-4 text-sm">
+                  <div className="text-right">
+                    <span className="text-catppuccin-overlay1 text-xs">{t.common.total}: </span>
+                    <span className={`font-bold text-lg ${scan.totalVulns > 0 ? 'text-catppuccin-red' : 'text-catppuccin-green'}`}>
+                      {scan.totalVulns}
+                    </span>
+                  </div>
+                  <span className={`font-semibold text-xs ${scan.totalVulns > 0 ? 'text-catppuccin-red' : 'text-catppuccin-green'}`}>
+                    {t.security.vulns}
+                  </span>
+                </div>
               </div>
-              <div className="flex items-center gap-3 text-sm">
-                <span
-                  className={`font-semibold ${scan.totalVulns > 0 ? 'text-catppuccin-red' : 'text-catppuccin-green'}`}
-                >
-                  {scan.totalVulns} {t.security.vulns}
-                </span>
-                <span
-                  className={`text-catppuccin-subtext0 transition-transform select-none ${isExpanded ? 'rotate-180' : ''}`}
-                >
-                  ▾
-                </span>
+              <div className="flex items-center gap-1 text-xs text-catppuccin-subtext0 select-none">
+                <span>{isExpanded ? t.projectDetail.hideScanHistory : t.projectDetail.showScanHistory}</span>
+                <span className={`inline-block transition-transform ${isExpanded ? 'rotate-180' : ''}`} aria-hidden="true">▾</span>
               </div>
             </div>
 
             {isExpanded && (
-              <div className="border-t border-catppuccin-surface0 p-4 space-y-4">
+              <div className="mt-2 border border-catppuccin-surface0 rounded-lg p-4 bg-catppuccin-mantle/60 space-y-4">
                 {scan.sources.length === 0 ? (
                   <p className="text-sm text-catppuccin-overlay1 text-center py-4">
                     {t.security.noVulns}
@@ -499,18 +579,11 @@ const OsvTab: React.FC<{
                       </p>
                       <div className="space-y-2 max-h-80 overflow-y-auto">
                         {source.packages.map((pkg, pi) => (
-                          <div
-                            key={pi}
-                            className="border border-catppuccin-surface0 rounded-lg p-3 bg-catppuccin-base/40"
-                          >
+                          <div key={pi} className="border border-catppuccin-surface0 rounded-lg p-3 bg-catppuccin-base/40">
                             <div className="flex items-start justify-between gap-2">
                               <div>
-                                <span className="font-mono text-xs text-catppuccin-teal">
-                                  {pkg.name}
-                                </span>
-                                <span className="text-xs text-catppuccin-overlay1 ml-2">
-                                  v{pkg.version}
-                                </span>
+                                <span className="font-mono text-xs text-catppuccin-teal">{pkg.name}</span>
+                                <span className="text-xs text-catppuccin-overlay1 ml-2">v{pkg.version}</span>
                                 <span className="text-xs px-1.5 py-0.5 rounded bg-catppuccin-surface0 text-catppuccin-overlay1 ml-2">
                                   {pkg.ecosystem}
                                 </span>
@@ -522,13 +595,9 @@ const OsvTab: React.FC<{
                             <div className="mt-2 space-y-1">
                               {pkg.vulns.map((v, vi) => (
                                 <div key={vi} className="flex items-start gap-2 text-xs">
-                                  <span className="font-mono text-catppuccin-blue shrink-0">
-                                    {v.id}
-                                  </span>
+                                  <span className="font-mono text-catppuccin-blue shrink-0">{v.id}</span>
                                   {v.summary && (
-                                    <span className="text-catppuccin-overlay1 truncate">
-                                      {v.summary}
-                                    </span>
+                                    <span className="text-catppuccin-overlay1 truncate">{v.summary}</span>
                                   )}
                                 </div>
                               ))}
