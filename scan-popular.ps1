@@ -51,6 +51,7 @@ docker run --rm -v "${cacheVol}:/root/.cache/trivy" $trivyImage image --download
 
 $grandTotal = ($targets | ForEach-Object { [math]::Min($PerImage, $_.tags.Count) } | Measure-Object -Sum).Sum
 $n = 0; $ok = 0; $fail = 0
+$osvExtOk = 0; $osvExtFail = 0
 $swAll = [System.Diagnostics.Stopwatch]::StartNew()
 
 if ($LocalOnly) {
@@ -96,7 +97,25 @@ foreach ($t in $targets) {
         $sw.Stop()
         if ($done) {
             $ok++
-            Write-Host ("    OK  ({0:n1} sn)" -f $sw.Elapsed.TotalSeconds) -ForegroundColor Green
+            Write-Host ("    Trivy OK  ({0:n1} sn)" -f $sw.Elapsed.TotalSeconds) -ForegroundColor Green
+
+            # OSV-Scanner: ayni imaji --docker flag ile tara (imaj zaten pull edildi)
+            $osvOutName = "osv-${proj}-${safeTag}-${ts}.json"
+            Write-Host ("    [OSV] $imageRef ...") -ForegroundColor DarkCyan
+            $osvResult = & docker run --rm `
+                -v /var/run/docker.sock:/var/run/docker.sock `
+                $osvImage `
+                --docker "${imageRef}" `
+                --format json
+            $osvExtExit = $LASTEXITCODE
+            $osvResult | Out-File -FilePath (Join-Path $outDir $osvOutName) -Encoding utf8
+            if ($osvExtExit -le 1) {
+                $osvExtOk++
+                Write-Host ("    OSV OK") -ForegroundColor Green
+            } else {
+                $osvExtFail++
+                Write-Host ("    OSV HATA (kod: $osvExtExit)") -ForegroundColor Red
+            }
         }
         else {
             $fail++
@@ -157,8 +176,9 @@ Write-Host "`n== Checkov IaC Taraması ==" -ForegroundColor Cyan
 
 $checkovImage   = 'bridgecrew/checkov:latest'
 $checkovTargets = @(
-    @{ proj = 'dockscan'; service = 'dockscan_backend'; path = 'backend' }
-    @{ proj = 'dockscan'; service = 'dockscan_nginx';   path = 'nginx'   }
+    @{ proj = 'dockscan'; service = 'dockscan_backend';  path = 'backend'  }
+    @{ proj = 'dockscan'; service = 'dockscan_nginx';    path = 'nginx'    }
+    @{ proj = 'dockscan'; service = 'dockscan_frontend'; path = 'frontend' }
 )
 $checkovOk = 0; $checkovFail = 0
 
@@ -269,8 +289,9 @@ Write-Host "`n== Tarama Ozeti ==" -ForegroundColor Cyan
 Write-Host ("Trivy (harici) - Toplam: {0}  Basarili: {1}  Hata: {2}  Sure: {3:n0} sn" -f `
         $grandTotal, $ok, $fail, $swAll.Elapsed.TotalSeconds)
 Write-Host ("Trivy (yerel)  - dockscan_backend + dockscan_nginx")
-Write-Host ("Checkov        - Basarili: {0}  Hata: {1}" -f $checkovOk, $checkovFail)
-Write-Host ("OSV            - Basarili: {0}  Hata: {1}" -f $osvOk, $osvFail)
+Write-Host ("Checkov        - Basarili: {0}  Hata: {1}  (backend + nginx + frontend)" -f $checkovOk, $checkovFail)
+Write-Host ("OSV (harici)   - Basarili: {0}  Hata: {1}" -f $osvExtOk, $osvExtFail)
+Write-Host ("OSV (yerel)    - Basarili: {0}  Hata: {1}" -f $osvOk, $osvFail)
 
 $jsons = Get-ChildItem $exportRoot -Recurse -Filter *.json -ErrorAction SilentlyContinue
 $sizeMB = [math]::Round((($jsons | Measure-Object Length -Sum).Sum / 1MB), 1)
