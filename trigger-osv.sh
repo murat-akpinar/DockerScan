@@ -31,7 +31,7 @@ fi
 # Dizin ve dosya hazırlığı
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-EXPORT_DIR="$SCRIPT_DIR/export/${PROJECT:+$PROJECT/}$IMAGE_NAME"
+EXPORT_DIR="$SCRIPT_DIR/export/${PROJECT:-$IMAGE_NAME}"
 SOURCE_DIR="/tmp/osv-input/$IMAGE_NAME"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 OUTPUT_FILENAME="osv-${IMAGE_NAME}-${TAG}-${TIMESTAMP}.json"
