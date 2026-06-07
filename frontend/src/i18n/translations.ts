@@ -107,6 +107,7 @@ const translations = {
       projectCount: (n: number) => `${n} proje`,
       checkovFailed: 'Checkov Hata',
       osvVulns: 'OSV Açık',
+      services: 'Servisler ve Taramalar',
     },
     // 404
     notFound: {
@@ -216,6 +217,7 @@ const translations = {
       projectCount: (n: number) => `${n} project${n !== 1 ? 's' : ''}`,
       checkovFailed: 'Checkov Failed',
       osvVulns: 'OSV Vulns',
+      services: 'Services & Scans',
     },
     notFound: {
       title: 'Page Not Found',
