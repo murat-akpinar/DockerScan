@@ -4,7 +4,8 @@
 # Export directory (contains Trivy JSON reports)
 # Tarama çıktıları repoya girmesin; alt klasörler dahil tüm JSON'lar
 # hariç tutulur (zaten izlenen örnek dosyalar repoda kalır).
-
+export/*.json
+export/**/*.json
 backend/backend
 
 # Node
