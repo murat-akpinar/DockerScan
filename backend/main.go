@@ -2120,13 +2120,19 @@ func gradeOrder(grade string) int {
 }
 
 // parseSecurityScanFilename extracts projectName, serviceName, tag, and scannedAt
-// from a checkov/osv relative path like "dockscan/checkov-dockscan_backend-local-20260606-120000.json".
+// from a checkov/osv filename using the same convention as Trivy's ArtifactName:
+//   "checkov-vaultscan_backend-test-v1.0-20260607-201408.json"
+//              ^^^^^^^^  ^^^^^^^  ^^^^^^^^
+//              project   service  tag
+// projectName is read from the underscore in the filename (left side),
+// so directory layout is irrelevant — flat or nested both work identically.
 func parseSecurityScanFilename(relPath, prefix string, fallback time.Time) (projectName, serviceName, tag string, scannedAt time.Time) {
 	relPath = filepath.ToSlash(relPath)
+
+	// Extract only the filename; directory is ignored for project detection.
 	lastSlash := strings.LastIndex(relPath, "/")
 	var base string
 	if lastSlash >= 0 {
-		projectName = relPath[:lastSlash]
 		base = relPath[lastSlash+1:]
 	} else {
 		base = relPath
@@ -2143,9 +2149,11 @@ func parseSecurityScanFilename(relPath, prefix string, fallback time.Time) (proj
 		base = base[:len(base)-len(tsStr)]
 	}
 
-	// base is now "{IMAGE_NAME}-{tag}", e.g. "dockscan_backend-local"
+	// base is now "{project}_{service}-{tag}", e.g. "vaultscan_backend-test-v1.0"
+	// Mirror Trivy: underscore separates project from service name.
 	us := strings.Index(base, "_")
 	if us < 0 {
+		// No underscore — treat whole base as serviceName (no project info in filename).
 		dash := strings.Index(base, "-")
 		if dash > 0 && dash < len(base)-1 {
 			serviceName = base[:dash]
@@ -2155,7 +2163,8 @@ func parseSecurityScanFilename(relPath, prefix string, fallback time.Time) (proj
 		}
 		return
 	}
-	right := base[us+1:] // e.g. "backend-local"
+	projectName = base[:us]
+	right := base[us+1:] // e.g. "backend-test-v1.0"
 	dash := strings.Index(right, "-")
 	if dash > 0 && dash < len(right)-1 {
 		serviceName = right[:dash]
