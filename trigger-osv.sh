@@ -10,18 +10,20 @@ DASHBOARD_API="${DASHBOARD_API:-http://localhost:3018}"
 # ---------------------------------------------------------------------------
 IMAGE_NAME=""
 TAG=""
+PROJECT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --image) IMAGE_NAME="$2"; shift 2 ;;
-        --tag)   TAG="$2";        shift 2 ;;
+        --image)   IMAGE_NAME="$2"; shift 2 ;;
+        --tag)     TAG="$2";        shift 2 ;;
+        --project) PROJECT="$2";    shift 2 ;;
         *) echo "[ERROR] Bilinmeyen argüman: $1" >&2; exit 1 ;;
     esac
 done
 
 if [[ -z "$IMAGE_NAME" || -z "$TAG" ]]; then
-    echo "Kullanım: $0 --image <imaj_adı> --tag <tag>"
-    echo "Örnek   : $0 --image dockscan_backend --tag test-v1.0"
+    echo "Kullanım: $0 --image <imaj_adı> --tag <tag> [--project <proje>]"
+    echo "Örnek   : $0 --image dockscan_backend --tag test-v1.0 --project myapp"
     exit 1
 fi
 
@@ -29,7 +31,7 @@ fi
 # Dizin ve dosya hazırlığı
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-EXPORT_DIR="$SCRIPT_DIR/export/$IMAGE_NAME"
+EXPORT_DIR="$SCRIPT_DIR/export/${PROJECT:+$PROJECT/}$IMAGE_NAME"
 SOURCE_DIR="/tmp/osv-input/$IMAGE_NAME"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 OUTPUT_FILENAME="osv-${IMAGE_NAME}-${TAG}-${TIMESTAMP}.json"
