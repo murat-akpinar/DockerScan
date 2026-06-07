@@ -21,7 +21,10 @@ A web dashboard that collects and visualizes Trivy security scan results. Aggreg
 
 - **Project-Based View**: View all Docker image scans for each project on a single page
 - **Severity Filtering**: Filter projects by CRITICAL, HIGH, MEDIUM, and LOW severity levels
-- **Letter Grade System**: Automatic security grade (A–F) per image and a `/api/grades` REST endpoint
+- **Letter Grade System**: Automatic security grade (A–F) for Trivy, Checkov, and OSV results
+- **Checkov IaC Scanning**: Detect misconfigurations in Dockerfiles and infrastructure code
+- **OSV-Scanner**: Find vulnerabilities in Go modules, npm, pip, and other dependency lockfiles
+- **Security Page**: Project-based navigation with grade badges for Checkov and OSV findings
 - **Detailed Vulnerability List**: ID, description, fixed version, and reference links for each finding
 - **CVE Search**: Query which projects/images contain a specific CVE
 - **Timeline**: Visualize how scans change over time with an interactive legend
@@ -141,6 +144,8 @@ fi
 
 ## Letter Grade System
 
+### Trivy (image vulnerabilities)
+
 The backend (`/api/grades`) and frontend dashboard use the same criteria:
 
 | Grade | CRITICAL | HIGH | MEDIUM | Description |
@@ -155,6 +160,32 @@ The backend (`/api/grades`) and frontend dashboard use the same criteria:
 
 Example: 2×A + 1×D → project grade **C** (not D)
 
+### Checkov (Dockerfile / IaC misconfigurations)
+
+Grades are calculated from the `failed` check count and displayed on the Security page.
+
+| Grade | Failed checks | Description |
+|-------|---------------|-------------|
+| **A** | 0 | No misconfigurations |
+| **B** | 1–2 | Minor issues |
+| **C** | 3–5 | Moderate risk |
+| **D** | 6–10 | High risk |
+| **F** | > 10 | Critical risk |
+
+### OSV-Scanner (dependency vulnerabilities)
+
+Grades are calculated from the total vulnerability count and displayed on the Security page.
+
+| Grade | Total vulns | Description |
+|-------|-------------|-------------|
+| **A** | 0 | Clean |
+| **B** | 1–2 | Minor |
+| **C** | 3–5 | Moderate risk |
+| **D** | 6–9 | High risk |
+| **F** | ≥ 10 | Critical risk |
+
+> Checkov and OSV grades are computed in the frontend (Security page). The `/api/grades` endpoint covers Trivy only.
+
 ## API Endpoints
 
 All API requests are accessed via nginx at `http://<host>:<FRONTEND_PORT>/api/...`.
@@ -167,8 +198,12 @@ All API requests are accessed via nginx at `http://<host>:<FRONTEND_PORT>/api/..
 | GET | `/api/scans` | List all scans |
 | GET | `/api/scans/{filename}` | Scan details (vulnerability list) |
 | GET | `/api/compare?scan1={f}&scan2={f}` | Compare two scans |
-| GET | `/api/grades` | Letter grades for all projects |
-| GET | `/api/grades?project={name}` | Letter grade for a single project |
+| GET | `/api/grades` | Trivy letter grades for all projects |
+| GET | `/api/grades?project={name}` | Trivy letter grade for a single project |
+| GET | `/api/checkov` | Checkov results for all projects |
+| GET | `/api/checkov?project={name}` | Checkov results for a specific project |
+| GET | `/api/osv` | OSV-Scanner results for all projects |
+| GET | `/api/osv?project={name}` | OSV-Scanner results for a specific project |
 | GET | `/api/cve/{cveId}` | Query which projects contain a CVE |
 | POST | `/api/reload` | Manually reload the index |
 
@@ -198,6 +233,92 @@ All API requests are accessed via nginx at `http://<host>:<FRONTEND_PORT>/api/..
 }
 ```
 
+### `/api/checkov?project=dockscan` Sample Output
+
+```json
+[
+  {
+    "project": "dockscan",
+    "service": "dockscan_backend",
+    "scanDate": "2026-06-07T10:00:00Z",
+    "passed": 12,
+    "failed": 1,
+    "checks": [
+      {
+        "checkId": "CKV_DOCKER_2",
+        "checkName": "Ensure that HEALTHCHECK instructions have been added to the container image",
+        "result": "failed",
+        "resource": "backend/Dockerfile"
+      }
+    ]
+  }
+]
+```
+
+### `/api/osv?project=dockscan` Sample Output
+
+```json
+[
+  {
+    "project": "dockscan",
+    "service": "dockscan_backend",
+    "scanDate": "2026-06-07T10:00:00Z",
+    "totalVulns": 0,
+    "results": []
+  },
+  {
+    "project": "dockscan",
+    "service": "dockscan_frontend",
+    "scanDate": "2026-06-07T10:00:00Z",
+    "totalVulns": 2,
+    "results": [
+      {
+        "source": { "path": "/src/package-lock.json", "type": "lockfile" },
+        "packages": [
+          {
+            "package": { "name": "vite", "version": "6.0.0", "ecosystem": "npm" },
+            "vulnerabilities": [{ "id": "GHSA-xxxx-xxxx-xxxx", "summary": "..." }]
+          }
+        ]
+      }
+    ]
+  }
+]
+```
+
+## Checkov & OSV-Scanner
+
+In addition to Trivy image scanning, DockerScan also visualizes Checkov (IaC) and OSV-Scanner (dependency) results on the **Security** page.
+
+### File Naming Convention
+
+Place scan output files in the same `export/{project}/` directory:
+
+| Scanner | Pattern | Example |
+|---------|---------|---------|
+| Trivy | `{image}-{YYYYMMDD-HHMMSS}.json` | `dockscan_backend-20260607-120000.json` |
+| Checkov | `checkov-{service}-{context}-{YYYYMMDD-HHMMSS}.json` | `checkov-dockscan_backend-local-20260607-120000.json` |
+| OSV | `osv-{service}-{context}-{YYYYMMDD-HHMMSS}.json` | `osv-dockscan_backend-local-20260607-120000.json` |
+
+### Scanning with `scan-popular.ps1`
+
+`scan-popular.ps1` runs all three scanners in sequence: Trivy (external images), Trivy (local images), Checkov, and OSV-Scanner.
+
+```powershell
+# Scan everything (external popular images + local project images)
+.\scan-popular.ps1
+
+# Scan only the project's own Docker images (fast — skips external images)
+.\scan-popular.ps1 -LocalOnly
+
+# Limit to 2 versions per external image
+.\scan-popular.ps1 -PerImage 2
+```
+
+`-LocalOnly` scans `dockscan_backend:latest` and `dockscan_nginx:latest` via Trivy, then runs Checkov on `backend/` and `nginx/` Dockerfiles, and OSV-Scanner on `backend/` and `frontend/` dependency lockfiles.
+
+> Make sure `docker compose up --build` has been run first so the local images exist.
+
 ## Configuration
 
 `.env` file (copy from `.example.env`):
@@ -226,7 +347,9 @@ DockScan/
 ├── nginx/                  # Single nginx — serves SPA and proxies /api/
 │   ├── Dockerfile          # Multi-stage: node build → nginx:alpine
 │   └── nginx.conf
-├── export/                 # Trivy JSON reports (place files here)
+├── export/                 # Scan results (Trivy, Checkov, OSV JSON files)
+│   └── {project}/          # One folder per project
+├── scan-popular.ps1        # Run Trivy + Checkov + OSV scans (Windows)
 ├── trigger-nexus.sh        # CI/CD: scan a specific image/tag
 ├── scan-nexus.sh           # Scan all images in Nexus (bulk)
 ├── .example.env

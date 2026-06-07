@@ -21,7 +21,10 @@ Trivy güvenlik tarama sonuçlarını toplayıp görselleştiren web dashboard u
 
 - **Proje Bazlı Görünüm**: Her proje için tüm Docker imajlarının taramalarını tek sayfada görüntüleme
 - **Severity Filtreleme**: CRITICAL, HIGH, MEDIUM, LOW seviyelerine göre projeleri filtreleme
-- **Harf Notu Sistemi**: Her imaj için otomatik güvenlik notu (A–F) ve `/api/grades` REST endpoint'i
+- **Harf Notu Sistemi**: Trivy, Checkov ve OSV sonuçları için otomatik güvenlik notu (A–F)
+- **Checkov IaC Taraması**: Dockerfile ve altyapı kodlarındaki yanlış yapılandırmaları tespit etme
+- **OSV-Scanner**: Go modülleri, npm, pip ve diğer bağımlılık dosyalarındaki açıkları bulma
+- **Güvenlik Sayfası**: Checkov ve OSV bulgularını harf notlarıyla gösteren proje bazlı gezinme
 - **Detaylı Vulnerability Listesi**: Her açık için ID, açıklama, fixed version ve detay linkleri
 - **CVE Arama**: Belirli bir CVE'yi hangi projelerde/imajlarda içerdiğini sorgulama
 - **Zaman Çizelgesi**: İnteraktif legend ile taramaların zaman içindeki değişimini görselleştirme
@@ -141,6 +144,8 @@ fi
 
 ## Harf Notu Sistemi
 
+### Trivy (imaj açıkları)
+
 Backend (`/api/grades`) ve frontend dashboard aynı kriterleri kullanır:
 
 | Not | CRITICAL | HIGH | MEDIUM | Açıklama |
@@ -156,6 +161,32 @@ Sorunlu imaj kendi notuyla listede görünmeye devam eder.
 
 Örnek: 2×A + 1×D → proje notu **C** (D değil)
 
+### Checkov (Dockerfile / IaC yanlış yapılandırmaları)
+
+Notlar `failed` kontrol sayısından hesaplanır ve Güvenlik sayfasında görünür.
+
+| Not | Başarısız kontrol | Açıklama |
+|-----|-------------------|----------|
+| **A** | 0 | Sorun yok |
+| **B** | 1–2 | Küçük sorunlar |
+| **C** | 3–5 | Orta risk |
+| **D** | 6–10 | Yüksek risk |
+| **F** | > 10 | Kritik risk |
+
+### OSV-Scanner (bağımlılık açıkları)
+
+Notlar toplam açık sayısından hesaplanır ve Güvenlik sayfasında görünür.
+
+| Not | Toplam açık | Açıklama |
+|-----|-------------|----------|
+| **A** | 0 | Temiz |
+| **B** | 1–2 | Küçük |
+| **C** | 3–5 | Orta risk |
+| **D** | 6–9 | Yüksek risk |
+| **F** | ≥ 10 | Kritik risk |
+
+> Checkov ve OSV notları frontend'de hesaplanır (Güvenlik sayfası). `/api/grades` endpoint'i yalnızca Trivy sonuçlarını kapsar.
+
 ## API Endpoints
 
 Tüm API istekleri nginx üzerinden `http://<host>:<FRONTEND_PORT>/api/...` ile erişilir.
@@ -168,8 +199,12 @@ Tüm API istekleri nginx üzerinden `http://<host>:<FRONTEND_PORT>/api/...` ile 
 | GET | `/api/scans` | Tüm taramaların listesi |
 | GET | `/api/scans/{filename}` | Tarama detayları (vulnerability listesi) |
 | GET | `/api/compare?scan1={f}&scan2={f}` | İki tarama arası karşılaştırma |
-| GET | `/api/grades` | Tüm projelerin harf notları |
-| GET | `/api/grades?project={name}` | Tek proje harf notu |
+| GET | `/api/grades` | Trivy harf notları — tüm projeler |
+| GET | `/api/grades?project={name}` | Trivy harf notu — tek proje |
+| GET | `/api/checkov` | Tüm projelerin Checkov sonuçları |
+| GET | `/api/checkov?project={name}` | Belirli projenin Checkov sonuçları |
+| GET | `/api/osv` | Tüm projelerin OSV-Scanner sonuçları |
+| GET | `/api/osv?project={name}` | Belirli projenin OSV-Scanner sonuçları |
 | GET | `/api/cve/{cveId}` | CVE'yi hangi projelerde içerdiğini sorgula |
 | POST | `/api/reload` | Index'i manuel olarak yenile |
 
@@ -199,6 +234,92 @@ Tüm API istekleri nginx üzerinden `http://<host>:<FRONTEND_PORT>/api/...` ile 
 }
 ```
 
+### `/api/checkov?project=dockscan` Örnek Çıktı
+
+```json
+[
+  {
+    "project": "dockscan",
+    "service": "dockscan_backend",
+    "scanDate": "2026-06-07T10:00:00Z",
+    "passed": 12,
+    "failed": 1,
+    "checks": [
+      {
+        "checkId": "CKV_DOCKER_2",
+        "checkName": "Ensure that HEALTHCHECK instructions have been added to the container image",
+        "result": "failed",
+        "resource": "backend/Dockerfile"
+      }
+    ]
+  }
+]
+```
+
+### `/api/osv?project=dockscan` Örnek Çıktı
+
+```json
+[
+  {
+    "project": "dockscan",
+    "service": "dockscan_backend",
+    "scanDate": "2026-06-07T10:00:00Z",
+    "totalVulns": 0,
+    "results": []
+  },
+  {
+    "project": "dockscan",
+    "service": "dockscan_frontend",
+    "scanDate": "2026-06-07T10:00:00Z",
+    "totalVulns": 2,
+    "results": [
+      {
+        "source": { "path": "/src/package-lock.json", "type": "lockfile" },
+        "packages": [
+          {
+            "package": { "name": "vite", "version": "6.0.0", "ecosystem": "npm" },
+            "vulnerabilities": [{ "id": "GHSA-xxxx-xxxx-xxxx", "summary": "..." }]
+          }
+        ]
+      }
+    ]
+  }
+]
+```
+
+## Checkov & OSV-Scanner
+
+DockerScan, Trivy imaj taramasına ek olarak Checkov (IaC) ve OSV-Scanner (bağımlılık) sonuçlarını da **Güvenlik** sayfasında görselleştirir.
+
+### Dosya İsimlendirme Kuralı
+
+Tarama çıktı dosyalarını aynı `export/{proje}/` dizinine koyun:
+
+| Tarayıcı | Şablon | Örnek |
+|----------|--------|-------|
+| Trivy | `{imaj}-{YYYYMMDD-HHMMSS}.json` | `dockscan_backend-20260607-120000.json` |
+| Checkov | `checkov-{servis}-{context}-{YYYYMMDD-HHMMSS}.json` | `checkov-dockscan_backend-local-20260607-120000.json` |
+| OSV | `osv-{servis}-{context}-{YYYYMMDD-HHMMSS}.json` | `osv-dockscan_backend-local-20260607-120000.json` |
+
+### `scan-popular.ps1` ile Tarama
+
+`scan-popular.ps1`, üç tarayıcıyı sırayla çalıştırır: Trivy (harici imajlar), Trivy (yerel imajlar), Checkov ve OSV-Scanner.
+
+```powershell
+# Her şeyi tara (harici popüler imajlar + projenin kendi imajları)
+.\scan-popular.ps1
+
+# Yalnızca projenin kendi Docker imajlarını tara (hızlı — harici imajları atlar)
+.\scan-popular.ps1 -LocalOnly
+
+# Harici imajlarda imaj başına versiyon sayısını sınırla
+.\scan-popular.ps1 -PerImage 2
+```
+
+`-LocalOnly` parametresiyle: Trivy ile `dockscan_backend:latest` ve `dockscan_nginx:latest` taranır; ardından `backend/` ve `nginx/` Dockerfile'larına Checkov, `backend/` ve `frontend/` bağımlılık dosyalarına OSV-Scanner uygulanır.
+
+> Yerel imajların mevcut olması için önce `docker compose up --build` çalıştırılmış olmalıdır.
+
 ## Yapılandırma
 
 `.env` dosyası (`.example.env`'den kopyalayın):
@@ -227,7 +348,9 @@ DockScan/
 ├── nginx/                  # Tek nginx — hem SPA serve hem /api/ proxy
 │   ├── Dockerfile          # Multi-stage: node build → nginx:alpine
 │   └── nginx.conf
-├── export/                 # Trivy JSON raporları (buraya koyun)
+├── export/                 # Tarama sonuçları (Trivy, Checkov, OSV JSON dosyaları)
+│   └── {proje}/            # Her proje için ayrı klasör
+├── scan-popular.ps1        # Trivy + Checkov + OSV taraması (Windows)
 ├── trigger-nexus.sh        # CI/CD: belirli imaj/tag tarama scripti
 ├── scan-nexus.sh           # Nexus'taki tüm imajları tara (toplu)
 ├── .example.env
