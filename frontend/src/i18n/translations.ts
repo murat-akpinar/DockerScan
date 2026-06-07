@@ -103,6 +103,10 @@ const translations = {
       noFindings: 'Başarısız bulgu yok.',
       noVulns: 'Açık bulunamadı.',
       vulns: 'açık',
+      noProjects: 'Henüz güvenlik taraması bulunamadı.',
+      projectCount: (n: number) => `${n} proje`,
+      checkovFailed: 'Checkov Hata',
+      osvVulns: 'OSV Açık',
     },
     // 404
     notFound: {
@@ -208,6 +212,10 @@ const translations = {
       noFindings: 'No failed checks.',
       noVulns: 'No vulnerabilities found.',
       vulns: 'vulns',
+      noProjects: 'No security scan projects found.',
+      projectCount: (n: number) => `${n} project${n !== 1 ? 's' : ''}`,
+      checkovFailed: 'Checkov Failed',
+      osvVulns: 'OSV Vulns',
     },
     notFound: {
       title: 'Page Not Found',

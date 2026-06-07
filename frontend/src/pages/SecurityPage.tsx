@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useLanguage, LangToggle } from '../i18n/LanguageContext';
 
 type CheckovFinding = {
@@ -63,6 +63,7 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
   const { t } = useLanguage();
   const [loading, setLoading] = useState(true);
   const [expandedScans, setExpandedScans] = useState<Set<string>>(new Set());
+  const [selectedProject, setSelectedProject] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -91,24 +92,150 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
     });
   };
 
-  const checkovTotal = checkovScans.reduce((s, c) => s + c.failed, 0);
-  const osvTotal = osvScans.reduce((s, o) => s + o.totalVulns, 0);
+  const projectNames = useMemo(() => {
+    const names = new Set<string>();
+    checkovScans.forEach((s) => names.add(s.projectName));
+    osvScans.forEach((s) => names.add(s.projectName));
+    return Array.from(names).sort();
+  }, [checkovScans, osvScans]);
 
+  const projectStats = useMemo(() => {
+    const stats: Record<string, { checkovFailed: number; osvVulns: number; lastScan: string }> = {};
+    for (const name of projectNames) {
+      const checkov = checkovScans.filter((s) => s.projectName === name);
+      const osv = osvScans.filter((s) => s.projectName === name);
+      const failed = checkov.reduce((sum, s) => sum + s.failed, 0);
+      const vulns = osv.reduce((sum, s) => sum + s.totalVulns, 0);
+      const allDates = [
+        ...checkov.map((s) => s.scannedAt),
+        ...osv.map((s) => s.scannedAt),
+      ]
+        .filter(Boolean)
+        .sort()
+        .reverse();
+      stats[name] = { checkovFailed: failed, osvVulns: vulns, lastScan: allDates[0] || '' };
+    }
+    return stats;
+  }, [projectNames, checkovScans, osvScans]);
+
+  // ── Project detail view ──────────────────────────────────────────────────
+  if (selectedProject) {
+    const filteredCheckov = checkovScans.filter((s) => s.projectName === selectedProject);
+    const filteredOsv = osvScans.filter((s) => s.projectName === selectedProject);
+    const checkovTotal = filteredCheckov.reduce((s, c) => s + c.failed, 0);
+    const osvTotal = filteredOsv.reduce((s, o) => s + o.totalVulns, 0);
+
+    return (
+      <div className="min-h-screen bg-catppuccin-base text-catppuccin-text">
+        <header className="border-b border-catppuccin-surface0 bg-catppuccin-mantle/70 backdrop-blur">
+          <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-2 text-sm">
+              <button
+                onClick={goDashboard}
+                className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
+              >
+                {t.nav.home}
+              </button>
+              <span className="text-catppuccin-overlay1">/</span>
+              <button
+                onClick={() => setSelectedProject(null)}
+                className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
+              >
+                {t.security.title}
+              </button>
+              <span className="text-catppuccin-overlay1">/</span>
+              <span className="px-3 py-1.5 rounded bg-catppuccin-teal/10 text-catppuccin-teal font-semibold">
+                {selectedProject}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <LangToggle />
+              <span className="text-xs text-catppuccin-overlay1">{t.common.dockscan}</span>
+            </div>
+          </div>
+        </header>
+
+        <main className="mx-auto max-w-5xl px-4 py-6 space-y-6">
+          <section className="grid gap-4 md:grid-cols-2">
+            <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-catppuccin-overlay1">
+                {t.security.checkovCard}
+              </p>
+              <p className="mt-2 text-3xl font-semibold text-catppuccin-peach">{checkovTotal}</p>
+              <p className="text-xs text-catppuccin-overlay1 mt-1">
+                {filteredCheckov.length} {t.security.scanFiles}
+              </p>
+            </div>
+            <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
+              <p className="text-xs font-medium uppercase tracking-wide text-catppuccin-overlay1">
+                {t.security.osvCard}
+              </p>
+              <p className="mt-2 text-3xl font-semibold text-catppuccin-red">{osvTotal}</p>
+              <p className="text-xs text-catppuccin-overlay1 mt-1">
+                {filteredOsv.length} {t.security.scanFiles}
+              </p>
+            </div>
+          </section>
+
+          <div className="flex gap-2 border-b border-catppuccin-surface0">
+            <button
+              onClick={() => setActiveTab('checkov')}
+              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                activeTab === 'checkov'
+                  ? 'border-catppuccin-teal text-catppuccin-teal'
+                  : 'border-transparent text-catppuccin-overlay1 hover:text-catppuccin-text'
+              }`}
+            >
+              Checkov
+              {checkovTotal > 0 && (
+                <span className="ml-2 px-1.5 py-0.5 rounded text-xs bg-catppuccin-peach/20 text-catppuccin-peach">
+                  {checkovTotal}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => setActiveTab('osv')}
+              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                activeTab === 'osv'
+                  ? 'border-catppuccin-teal text-catppuccin-teal'
+                  : 'border-transparent text-catppuccin-overlay1 hover:text-catppuccin-text'
+              }`}
+            >
+              OSV-Scanner
+              {osvTotal > 0 && (
+                <span className="ml-2 px-1.5 py-0.5 rounded text-xs bg-catppuccin-red/20 text-catppuccin-red">
+                  {osvTotal}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {activeTab === 'checkov' ? (
+            <CheckovTab scans={filteredCheckov} expandedScans={expandedScans} toggle={toggle} />
+          ) : (
+            <OsvTab scans={filteredOsv} expandedScans={expandedScans} toggle={toggle} />
+          )}
+        </main>
+      </div>
+    );
+  }
+
+  // ── Project list view (same design as ProjectsPage) ──────────────────────
   return (
     <div className="min-h-screen bg-catppuccin-base text-catppuccin-text">
       <header className="border-b border-catppuccin-surface0 bg-catppuccin-mantle/70 backdrop-blur">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex items-center gap-3">
             <button
               onClick={goDashboard}
               className="px-3 py-1.5 rounded border border-catppuccin-surface1 hover:bg-catppuccin-surface0 hover:border-catppuccin-teal text-catppuccin-text transition-colors font-medium"
             >
-              {t.nav.home}
+              ← {t.nav.home}
             </button>
-            <span className="text-catppuccin-overlay1">/</span>
-            <span className="px-3 py-1.5 rounded bg-catppuccin-teal/10 text-catppuccin-teal font-semibold">
-              {t.security.title}
+            <span className="rounded bg-catppuccin-teal/10 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-catppuccin-teal">
+              Security
             </span>
+            <span className="text-lg font-semibold">{t.security.title}</span>
           </div>
           <div className="flex items-center gap-2">
             <LangToggle />
@@ -118,72 +245,83 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
       </header>
 
       <main className="mx-auto max-w-5xl px-4 py-6 space-y-6">
-        {/* Özet kartları */}
-        <section className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-catppuccin-overlay1">
-              {t.security.checkovCard}
-            </p>
-            <p className="mt-2 text-3xl font-semibold text-catppuccin-peach">{checkovTotal}</p>
-            <p className="text-xs text-catppuccin-overlay1 mt-1">{checkovScans.length} {t.security.scanFiles}</p>
+        <section className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-catppuccin-text">{t.security.title}</h2>
+            <span className="text-xs text-catppuccin-overlay0">
+              {t.security.projectCount(projectNames.length)}
+            </span>
           </div>
-          <div className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-catppuccin-overlay1">
-              {t.security.osvCard}
-            </p>
-            <p className="mt-2 text-3xl font-semibold text-catppuccin-red">{osvTotal}</p>
-            <p className="text-xs text-catppuccin-overlay1 mt-1">{osvScans.length} {t.security.scanFiles}</p>
-          </div>
+
+          {loading ? (
+            <div className="flex items-center justify-center h-40 text-catppuccin-overlay1">
+              {t.common.loading}
+            </div>
+          ) : projectNames.length === 0 ? (
+            <div className="flex h-40 items-center justify-center text-sm text-catppuccin-overlay0">
+              {t.security.noProjects}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {projectNames.map((name) => {
+                const stats = projectStats[name];
+                return (
+                  <div
+                    key={name}
+                    role="button"
+                    tabIndex={0}
+                    className="border border-catppuccin-surface0 rounded-lg p-4 bg-catppuccin-base/60 hover:bg-catppuccin-mantle/40 cursor-pointer transition-colors"
+                    onClick={() => setSelectedProject(name)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelectedProject(name);
+                      }
+                    }}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-lg font-semibold text-catppuccin-text">{name}</h3>
+                        {stats.lastScan && (
+                          <p className="text-xs text-catppuccin-overlay1 mt-1">
+                            {t.common.lastScan}: {new Date(stats.lastScan).toLocaleString()}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-6">
+                        {stats.checkovFailed > 0 && (
+                          <div className="text-center">
+                            <p className="text-xs text-catppuccin-overlay1">{t.security.checkovFailed}</p>
+                            <p className="text-2xl font-semibold text-catppuccin-peach">
+                              {stats.checkovFailed}
+                            </p>
+                          </div>
+                        )}
+                        {stats.osvVulns > 0 && (
+                          <div className="text-center">
+                            <p className="text-xs text-catppuccin-overlay1">{t.security.osvVulns}</p>
+                            <p className="text-2xl font-semibold text-catppuccin-red">
+                              {stats.osvVulns}
+                            </p>
+                          </div>
+                        )}
+                        {stats.checkovFailed === 0 && stats.osvVulns === 0 && (
+                          <span className="text-sm text-catppuccin-green font-medium">✓ Clean</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </section>
-
-        {/* Sekmeler */}
-        <div className="flex gap-2 border-b border-catppuccin-surface0">
-          <button
-            onClick={() => setActiveTab('checkov')}
-            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
-              activeTab === 'checkov'
-                ? 'border-catppuccin-teal text-catppuccin-teal'
-                : 'border-transparent text-catppuccin-overlay1 hover:text-catppuccin-text'
-            }`}
-          >
-            Checkov
-            {checkovTotal > 0 && (
-              <span className="ml-2 px-1.5 py-0.5 rounded text-xs bg-catppuccin-peach/20 text-catppuccin-peach">
-                {checkovTotal}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={() => setActiveTab('osv')}
-            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
-              activeTab === 'osv'
-                ? 'border-catppuccin-teal text-catppuccin-teal'
-                : 'border-transparent text-catppuccin-overlay1 hover:text-catppuccin-text'
-            }`}
-          >
-            OSV-Scanner
-            {osvTotal > 0 && (
-              <span className="ml-2 px-1.5 py-0.5 rounded text-xs bg-catppuccin-red/20 text-catppuccin-red">
-                {osvTotal}
-              </span>
-            )}
-          </button>
-        </div>
-
-        {loading ? (
-          <div className="flex items-center justify-center h-40 text-catppuccin-overlay1">
-            {t.common.loading}
-          </div>
-        ) : activeTab === 'checkov' ? (
-          <CheckovTab scans={checkovScans} expandedScans={expandedScans} toggle={toggle} />
-        ) : (
-          <OsvTab scans={osvScans} expandedScans={expandedScans} toggle={toggle} />
-        )}
       </main>
     </div>
   );
 };
 
+// ── Checkov Tab ──────────────────────────────────────────────────────────────
 const CheckovTab: React.FC<{
   scans: CheckovScan[];
   expandedScans: Set<string>;
@@ -205,18 +343,23 @@ const CheckovTab: React.FC<{
         const isExpanded = expandedScans.has(scan.filename);
         const hasFindings = scan.failed > 0;
         return (
-          <div key={scan.filename} className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 overflow-hidden">
+          <div
+            key={scan.filename}
+            className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 overflow-hidden"
+          >
             <div
               role="button"
               tabIndex={0}
               onClick={() => toggle(scan.filename)}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggle(scan.filename); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') toggle(scan.filename);
+              }}
               className="flex items-center justify-between p-4 cursor-pointer hover:bg-catppuccin-surface0/30 transition-colors"
             >
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-catppuccin-text">
-                    {scan.projectName} / {scan.serviceName}
+                    {scan.serviceName}
                   </span>
                   {scan.tag && (
                     <span className="text-xs px-2 py-0.5 rounded bg-catppuccin-surface0 text-catppuccin-overlay1">
@@ -230,31 +373,41 @@ const CheckovTab: React.FC<{
               </div>
               <div className="flex items-center gap-4 text-sm">
                 <span className="text-catppuccin-green font-medium">✓ {scan.passed}</span>
-                <span className={`font-medium ${hasFindings ? 'text-catppuccin-red' : 'text-catppuccin-overlay1'}`}>
+                <span
+                  className={`font-medium ${hasFindings ? 'text-catppuccin-red' : 'text-catppuccin-overlay1'}`}
+                >
                   ✗ {scan.failed}
                 </span>
                 <span className="text-catppuccin-overlay1 text-xs">~ {scan.skipped}</span>
-                <span className={`text-catppuccin-subtext0 transition-transform select-none ${isExpanded ? 'rotate-180' : ''}`}>▾</span>
+                <span
+                  className={`text-catppuccin-subtext0 transition-transform select-none ${isExpanded ? 'rotate-180' : ''}`}
+                >
+                  ▾
+                </span>
               </div>
             </div>
 
             {isExpanded && (
               <div className="border-t border-catppuccin-surface0 p-4">
                 {scan.findings.length === 0 ? (
-                  <p className="text-sm text-catppuccin-overlay1 text-center py-4">{t.security.noFindings}</p>
+                  <p className="text-sm text-catppuccin-overlay1 text-center py-4">
+                    {t.security.noFindings}
+                  </p>
                 ) : (
                   <div className="space-y-2 max-h-80 overflow-y-auto">
                     {scan.findings.map((f, i) => (
-                      <div key={i} className="border border-catppuccin-red/30 rounded-lg p-3 bg-catppuccin-red/5">
+                      <div
+                        key={i}
+                        className="border border-catppuccin-red/30 rounded-lg p-3 bg-catppuccin-red/5"
+                      >
                         <div className="flex items-start justify-between gap-2">
                           <span className="font-mono text-xs text-catppuccin-teal">{f.checkId}</span>
                           <span className="text-xs text-catppuccin-overlay1 shrink-0">
-                            {f.filePath}{f.line > 0 ? `:${f.line}` : ''}
+                            {f.filePath}
+                            {f.line > 0 ? `:${f.line}` : ''}
                           </span>
                         </div>
-                        {f.name && (
-                          <p className="text-xs text-catppuccin-text mt-1">{f.name}</p>
-                        )}
+                        {f.name && <p className="text-xs text-catppuccin-text mt-1">{f.name}</p>}
                       </div>
                     ))}
                   </div>
@@ -268,6 +421,7 @@ const CheckovTab: React.FC<{
   );
 };
 
+// ── OSV Tab ──────────────────────────────────────────────────────────────────
 const OsvTab: React.FC<{
   scans: OsvScan[];
   expandedScans: Set<string>;
@@ -288,18 +442,23 @@ const OsvTab: React.FC<{
       {scans.map((scan) => {
         const isExpanded = expandedScans.has(scan.filename);
         return (
-          <div key={scan.filename} className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 overflow-hidden">
+          <div
+            key={scan.filename}
+            className="rounded-xl border border-catppuccin-surface0 bg-catppuccin-mantle/60 overflow-hidden"
+          >
             <div
               role="button"
               tabIndex={0}
               onClick={() => toggle(scan.filename)}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggle(scan.filename); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') toggle(scan.filename);
+              }}
               className="flex items-center justify-between p-4 cursor-pointer hover:bg-catppuccin-surface0/30 transition-colors"
             >
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-catppuccin-text">
-                    {scan.projectName} / {scan.serviceName}
+                    {scan.serviceName}
                   </span>
                   {scan.tag && (
                     <span className="text-xs px-2 py-0.5 rounded bg-catppuccin-surface0 text-catppuccin-overlay1">
@@ -312,30 +471,46 @@ const OsvTab: React.FC<{
                 </p>
               </div>
               <div className="flex items-center gap-3 text-sm">
-                <span className={`font-semibold ${scan.totalVulns > 0 ? 'text-catppuccin-red' : 'text-catppuccin-green'}`}>
+                <span
+                  className={`font-semibold ${scan.totalVulns > 0 ? 'text-catppuccin-red' : 'text-catppuccin-green'}`}
+                >
                   {scan.totalVulns} {t.security.vulns}
                 </span>
-                <span className={`text-catppuccin-subtext0 transition-transform select-none ${isExpanded ? 'rotate-180' : ''}`}>▾</span>
+                <span
+                  className={`text-catppuccin-subtext0 transition-transform select-none ${isExpanded ? 'rotate-180' : ''}`}
+                >
+                  ▾
+                </span>
               </div>
             </div>
 
             {isExpanded && (
               <div className="border-t border-catppuccin-surface0 p-4 space-y-4">
                 {scan.sources.length === 0 ? (
-                  <p className="text-sm text-catppuccin-overlay1 text-center py-4">{t.security.noVulns}</p>
+                  <p className="text-sm text-catppuccin-overlay1 text-center py-4">
+                    {t.security.noVulns}
+                  </p>
                 ) : (
                   scan.sources.map((source, si) => (
                     <div key={si}>
                       <p className="text-xs font-semibold text-catppuccin-subtext0 mb-2">
-                        {source.path} <span className="text-catppuccin-overlay1">({source.type})</span>
+                        {source.path}{' '}
+                        <span className="text-catppuccin-overlay1">({source.type})</span>
                       </p>
                       <div className="space-y-2 max-h-80 overflow-y-auto">
                         {source.packages.map((pkg, pi) => (
-                          <div key={pi} className="border border-catppuccin-surface0 rounded-lg p-3 bg-catppuccin-base/40">
+                          <div
+                            key={pi}
+                            className="border border-catppuccin-surface0 rounded-lg p-3 bg-catppuccin-base/40"
+                          >
                             <div className="flex items-start justify-between gap-2">
                               <div>
-                                <span className="font-mono text-xs text-catppuccin-teal">{pkg.name}</span>
-                                <span className="text-xs text-catppuccin-overlay1 ml-2">v{pkg.version}</span>
+                                <span className="font-mono text-xs text-catppuccin-teal">
+                                  {pkg.name}
+                                </span>
+                                <span className="text-xs text-catppuccin-overlay1 ml-2">
+                                  v{pkg.version}
+                                </span>
                                 <span className="text-xs px-1.5 py-0.5 rounded bg-catppuccin-surface0 text-catppuccin-overlay1 ml-2">
                                   {pkg.ecosystem}
                                 </span>
@@ -347,9 +522,13 @@ const OsvTab: React.FC<{
                             <div className="mt-2 space-y-1">
                               {pkg.vulns.map((v, vi) => (
                                 <div key={vi} className="flex items-start gap-2 text-xs">
-                                  <span className="font-mono text-catppuccin-blue shrink-0">{v.id}</span>
+                                  <span className="font-mono text-catppuccin-blue shrink-0">
+                                    {v.id}
+                                  </span>
                                   {v.summary && (
-                                    <span className="text-catppuccin-overlay1 truncate">{v.summary}</span>
+                                    <span className="text-catppuccin-overlay1 truncate">
+                                      {v.summary}
+                                    </span>
                                   )}
                                 </div>
                               ))}

@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
   scan-popular.ps1
   --------------------------------------------------------------------
@@ -6,17 +6,19 @@
   sonuçları export/ klasörüne koyar ve dashboard'ın yükleme süresini
   ölçer. Çok sayıda tarama verisiyle açılış hızını test etmek içindir.
 
-  Kullanım:
-    .\scan-popular.ps1                 # tüm imajları tara
+  Kullanim:
+    .\scan-popular.ps1                 # tum imajlari tara
     .\scan-popular.ps1 -PerImage 2     # her imajdan sadece 2 versiyon
+    .\scan-popular.ps1 -LocalOnly      # sadece kendi imajlari (hizli)
 
   Not: Trivy DB'si bir kez indirilip named volume'da saklanır. Ardışık
   taramalarda Trivy cache kilidi ("cache may be in use") nadiren çakışır;
   bu durumda tarama otomatik olarak birkaç kez tekrar denenir.
 #>
 param(
-    [int]$PerImage = 4,                          # her imajdan kaç versiyon
-    [string]$Dashboard = "http://localhost:3018" # backend (reload + ölçüm)
+    [int]$PerImage    = 4,                           # her imajdan kac versiyon
+    [string]$Dashboard = "http://localhost:3018",    # backend (reload + olcum)
+    [switch]$LocalOnly                               # sadece kendi imajlari
 )
 
 $root       = $PSScriptRoot
@@ -35,20 +37,28 @@ $targets = @(
     @{ ref = 'grafana/grafana'; tags = @('10.4.0', '11.0.0', '11.1.0', '11.2.0') } # Grafana
 )
 
-Write-Host "== DockScan toplu tarama ==" -ForegroundColor Cyan
+# DockerScan'ın kendi imajları (yerel, docker compose ile build edilmiş)
+$localTargets = @(
+    @{ proj = 'dockscan'; image = 'dockscan_backend'; ref = 'dockscan_backend:latest' }
+    @{ proj = 'dockscan'; image = 'dockscan_nginx';   ref = 'dockscan_nginx:latest'   }
+)
+
+Write-Host "== DockScan tarama ==" -ForegroundColor Cyan
 docker volume create $cacheVol | Out-Null
 
-# Trivy DB'sini bir kez indir; taramalar artik DB guncellemesi yapmayacak
-# (--skip-db-update), bu da cache kilit cakismalarini buyuk olcude onler.
 Write-Host "Trivy DB hazirlaniyor (bir kez indirilir)..." -ForegroundColor Cyan
 docker run --rm -v "${cacheVol}:/root/.cache/trivy" $trivyImage image --download-db-only --quiet 2>&1 | Out-Null
 
-# Toplam tarama sayısı (ilerleme için)
 $grandTotal = ($targets | ForEach-Object { [math]::Min($PerImage, $_.tags.Count) } | Measure-Object -Sum).Sum
 $n = 0; $ok = 0; $fail = 0
 $swAll = [System.Diagnostics.Stopwatch]::StartNew()
 
+if ($LocalOnly) {
+    Write-Host "  -LocalOnly: harici imaj taramasi atlandi." -ForegroundColor DarkYellow
+}
+
 foreach ($t in $targets) {
+    if ($LocalOnly) { continue }
     $proj   = ($t.ref -split '/')[-1]                 # grafana/grafana -> grafana
     $outDir = Join-Path $exportRoot $proj
     New-Item -ItemType Directory -Force $outDir | Out-Null
@@ -97,6 +107,50 @@ foreach ($t in $targets) {
 $swAll.Stop()
 
 # ---------------------------------------------------------------------------
+# Trivy - DockerScan kendi yerel imajlarini tara
+# ---------------------------------------------------------------------------
+Write-Host "`n== DockerScan Yerel Imaj Taramasi (Trivy) ==" -ForegroundColor Cyan
+
+foreach ($lt in $localTargets) {
+    $outDir = Join-Path $exportRoot $lt.proj
+    New-Item -ItemType Directory -Force $outDir | Out-Null
+
+    $ts      = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $outName = "$($lt.image)-latest-$ts.json"
+
+    Write-Host ("  [Trivy] {0}" -f $lt.ref) -ForegroundColor Yellow
+
+    # Imajin yerelde var olup olmadigini kontrol et
+    $imgExists = docker image inspect $lt.ref 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "    ATLANDI - imaj bulunamadi: $($lt.ref)  (once 'docker compose up --build' calistirin)" -ForegroundColor DarkYellow
+        continue
+    }
+
+    $attempt = 0; $done = $false
+    while (-not $done -and $attempt -lt $maxRetry) {
+        $attempt++
+        docker run --rm `
+            -v "${cacheVol}:/root/.cache/trivy" `
+            -v /var/run/docker.sock:/var/run/docker.sock `
+            -v "${outDir}:/output" `
+            $trivyImage image --quiet --scanners vuln --skip-db-update `
+            --format json --output "/output/$outName" $lt.ref
+        if ($LASTEXITCODE -eq 0) { $done = $true }
+        elseif ($attempt -lt $maxRetry) {
+            Write-Host ("    gecici hata, {0}. deneme..." -f ($attempt + 1)) -ForegroundColor DarkYellow
+            Start-Sleep -Seconds 3
+        }
+    }
+
+    if ($done) {
+        Write-Host "    OK" -ForegroundColor Green
+    } else {
+        Write-Host ("    HATA ({0} deneme sonrasi) - atlandi" -f $maxRetry) -ForegroundColor Red
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Checkov — proje Dockerfile'larını tara
 # ---------------------------------------------------------------------------
 Write-Host "`n== Checkov IaC Taraması ==" -ForegroundColor Cyan
@@ -119,7 +173,7 @@ foreach ($t in $checkovTargets) {
     Write-Host ("  [Checkov] {0}" -f $t.service) -ForegroundColor Yellow
 
     if (-not (Test-Path $srcPath)) {
-        Write-Host "    ATLANDI — dizin bulunamadı: $srcPath" -ForegroundColor DarkYellow
+        Write-Host "    ATLANDI - imaj bulunamadi: $($lt.ref)  (once 'docker compose up --build' calistirin)" -ForegroundColor DarkYellow
         continue
     }
 
@@ -167,7 +221,7 @@ foreach ($t in $osvTargets) {
     Write-Host ("  [OSV] {0}" -f $t.service) -ForegroundColor Yellow
 
     if (-not (Test-Path $srcPath)) {
-        Write-Host "    ATLANDI — dizin bulunamadı: $srcPath" -ForegroundColor DarkYellow
+        Write-Host "    ATLANDI - imaj bulunamadi: $($lt.ref)  (once 'docker compose up --build' calistirin)" -ForegroundColor DarkYellow
         continue
     }
 
@@ -212,10 +266,11 @@ function Measure-Endpoint($path) {
 
 # Özet
 Write-Host "`n== Tarama Ozeti ==" -ForegroundColor Cyan
-Write-Host ("Trivy   - Toplam: {0}  Basarili: {1}  Hata: {2}  Sure: {3:n0} sn" -f `
+Write-Host ("Trivy (harici) - Toplam: {0}  Basarili: {1}  Hata: {2}  Sure: {3:n0} sn" -f `
         $grandTotal, $ok, $fail, $swAll.Elapsed.TotalSeconds)
-Write-Host ("Checkov - Basarili: {0}  Hata: {1}" -f $checkovOk, $checkovFail)
-Write-Host ("OSV     - Basarili: {0}  Hata: {1}" -f $osvOk, $osvFail)
+Write-Host ("Trivy (yerel)  - dockscan_backend + dockscan_nginx")
+Write-Host ("Checkov        - Basarili: {0}  Hata: {1}" -f $checkovOk, $checkovFail)
+Write-Host ("OSV            - Basarili: {0}  Hata: {1}" -f $osvOk, $osvFail)
 
 $jsons = Get-ChildItem $exportRoot -Recurse -Filter *.json -ErrorAction SilentlyContinue
 $sizeMB = [math]::Round((($jsons | Measure-Object Length -Sum).Sum / 1MB), 1)
@@ -229,3 +284,4 @@ Write-Host "`n== Dashboard Yukleme Sureleri ==" -ForegroundColor Cyan
 ) | Format-Table -AutoSize
 
 Write-Host "Dashboard: http://localhost:3017`n" -ForegroundColor Green
+

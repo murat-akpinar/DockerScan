@@ -20,7 +20,7 @@ COPY frontend/src ./src
 
 RUN npm run build
 
-# Stage 2: nginx — static dosyaları serve et + /api/ proxy
+# Stage 2: nginx — static dosyalari serve et + /api/ proxy
 FROM nginx:alpine
 
 RUN apk update && apk upgrade --no-cache && \
@@ -30,6 +30,19 @@ RUN apk update && apk upgrade --no-cache && \
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx/nginx.conf /etc/nginx/nginx.conf
 
-EXPOSE 80
+# nginx kullanicisinin yazabilmesi icin gerekli dizin izinleri
+RUN chown -R nginx:nginx /usr/share/nginx/html \
+                         /var/cache/nginx \
+                         /var/log/nginx \
+                         /etc/nginx/conf.d && \
+    touch /var/run/nginx.pid && \
+    chown nginx:nginx /var/run/nginx.pid
+
+USER nginx
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD wget -q -O /dev/null http://localhost:8080/health || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]

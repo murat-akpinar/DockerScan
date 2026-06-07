@@ -34,12 +34,12 @@ services:
     image: dockscan_nginx:${VERSION:-latest}
     container_name: dockscan-nginx
     ports:
-      - "${FRONTEND_PORT}:80"
+      - "${FRONTEND_PORT}:8080"
     depends_on:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/health || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
