@@ -228,5 +228,5 @@ const translations = {
   },
 } as const;
 
-export type Translations = typeof translations.tr;
+export type Translations = typeof translations[keyof typeof translations];
 export default translations;
