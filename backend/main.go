@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -19,6 +20,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 )
+
+// openapiSpec is the OpenAPI 3 document served at /openapi.yaml and rendered by
+// the Swagger UI page at /swagger. Embedded so the binary is self-contained.
+//
+//go:embed openapi.yaml
+var openapiSpec []byte
 
 // Common constants to avoid duplicated literals and improve maintainability.
 const (
@@ -50,9 +57,46 @@ type IndexData struct {
 	// Lets the image scan-history endpoint answer from memory.
 	imageScans map[string]map[string][]ScanSummary
 
+	// metas maps an image key (ArtifactName without registry/tag, e.g.
+	// "dockscan_backend") to deploy metadata (IP, app name) loaded from
+	// meta-<image>.json files. Used to enrich the /api/summary feed.
+	metas map[string]ScanMeta
+
+	// cvesBySevByFile maps a scan's relPath (== ScanSummary.Filename) to its
+	// unique CVE IDs grouped by severity. Powers the per-image CVE lists in
+	// the /api/summary feed.
+	cvesBySevByFile map[string]map[string][]string
+
 	// etag is a content fingerprint (derived from GeneratedAt) used for
 	// HTTP conditional requests (If-None-Match -> 304 Not Modified).
 	etag string
+}
+
+// ScanMeta is optional deployment metadata written by the trigger scripts as
+// meta-<image>.json alongside the scans. It supplies the deploy IP and app
+// name that the Trivy report itself does not contain.
+type ScanMeta struct {
+	Image   string `json:"image"`   // join key, equals ArtifactName image part (e.g. "dockscan_backend")
+	AppName string `json:"appName"` // human app/project name
+	IP      string `json:"ip"`      // deploy target IP (may be comma-separated)
+}
+
+// SummaryRow is one row of the /api/summary feed: the latest scan per
+// project/image, flattened with deploy metadata for external dashboards.
+type SummaryRow struct {
+	AppName       string         `json:"appName"`
+	ProjectName   string         `json:"projectName"`
+	ImageName     string         `json:"imageName"`
+	Image         string         `json:"image"` // full ArtifactName image part (join key)
+	Tag           string         `json:"tag"`
+	IP            string         `json:"ip"`
+	Grade         string         `json:"grade"`
+	TotalVulns    int            `json:"totalVulns"`
+	SeverityCount map[string]int `json:"severityCount"`
+	// Cves holds the unique CVE IDs of the latest scan grouped by severity
+	// (CRITICAL/HIGH/MEDIUM/LOW/UNKNOWN).
+	Cves     map[string][]string `json:"cves"`
+	LastScan time.Time           `json:"lastScan"`
 }
 
 // ── Checkov types ──────────────────────────────────────────────────────────
@@ -110,10 +154,11 @@ type OsvScanRecord struct {
 // fileCacheEntry caches the parsed result of a single scan file so that
 // unchanged files are not re-parsed on every index rebuild.
 type fileCacheEntry struct {
-	modTime time.Time
-	size    int64
-	summary ScanSummary
-	cveIDs  []string // unique CVE IDs present in this file
+	modTime   time.Time
+	size      int64
+	summary   ScanSummary
+	cveIDs    []string            // unique CVE IDs present in this file
+	cvesBySev map[string][]string // unique CVE IDs grouped by severity
 }
 
 type checkovCacheEntry struct {
@@ -876,6 +921,85 @@ func main() {
 		}
 	})
 
+	// Flattened latest-scan feed for external dashboards (IP, app, image,
+	// grade, last scan date). One row per project/image.
+	r.Get("/api/summary", func(w http.ResponseWriter, r *http.Request) {
+		indexMu.RLock()
+		current := indexData
+		indexMu.RUnlock()
+
+		if current == nil {
+			http.Error(w, "index not ready", http.StatusServiceUnavailable)
+			return
+		}
+
+		if notModified(w, r, current.etag) {
+			return
+		}
+
+		rows := make([]SummaryRow, 0)
+		for _, p := range current.Projects {
+			for _, img := range p.Images {
+				var artifactName, tag, latestFile string
+				if len(img.Scans) > 0 {
+					artifactName = img.Scans[0].ArtifactName
+					tag = img.Scans[0].Tag
+					latestFile = img.Scans[0].Filename
+				}
+				imageKey := imageKeyFromArtifact(artifactName)
+
+				appName := p.ProjectName
+				ip := ""
+				if meta, ok := current.metas[imageKey]; ok {
+					if meta.AppName != "" {
+						appName = meta.AppName
+					}
+					ip = meta.IP
+				}
+
+				// CVE IDs of the latest scan, grouped by severity. Always a
+				// non-nil map so the JSON field is an object, not null.
+				cves := current.cvesBySevByFile[latestFile]
+				if cves == nil {
+					cves = map[string][]string{}
+				}
+
+				rows = append(rows, SummaryRow{
+					AppName:       appName,
+					ProjectName:   p.ProjectName,
+					ImageName:     img.ImageName,
+					Image:         imageKey,
+					Tag:           tag,
+					IP:            ip,
+					Grade:         img.Grade,
+					TotalVulns:    img.TotalVulns,
+					SeverityCount: img.SeverityCount,
+					Cves:          cves,
+					LastScan:      img.LastScan,
+				})
+			}
+		}
+
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].ProjectName != rows[j].ProjectName {
+				return rows[i].ProjectName < rows[j].ProjectName
+			}
+			return rows[i].ImageName < rows[j].ImageName
+		})
+
+		w.Header().Set(headerContentType, mimeApplicationJSON)
+		if err := json.NewEncoder(w).Encode(rows); err != nil {
+			http.Error(w, errEncodeResponse, http.StatusInternalServerError)
+		}
+	})
+
+	// OpenAPI spec + Swagger UI.
+	r.Get("/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(headerContentType, "application/yaml; charset=utf-8")
+		_, _ = w.Write(openapiSpec)
+	})
+	r.Get("/swagger", handleSwaggerUI)
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -985,6 +1109,8 @@ type rootStrings struct {
 	cve         string
 	checkov     string
 	osv         string
+	summary     string
+	swagger     string
 }
 
 var rootTR = rootStrings{
@@ -1005,6 +1131,8 @@ var rootTR = rootStrings{
 	cve:        "CVE ID'ye göre hangi taramalarda geçtiğini göster",
 	checkov:    "Checkov IaC tarama sonuçları",
 	osv:        "OSV-Scanner bağımlılık zafiyet sonuçları",
+	summary:    "Tüm imajların özet beslemesi (IP, app, imaj, not, son tarama)",
+	swagger:    "Swagger UI — interaktif API dokümantasyonu",
 }
 
 var rootEN = rootStrings{
@@ -1025,6 +1153,8 @@ var rootEN = rootStrings{
 	cve:        "Show which scans contain a given CVE ID",
 	checkov:    "Checkov IaC scan results",
 	osv:        "OSV-Scanner dependency vulnerability results",
+	summary:    "Flattened feed of all images (IP, app, image, grade, last scan)",
+	swagger:    "Swagger UI — interactive API documentation",
 }
 
 func detectLang(r *http.Request) string {
@@ -1150,6 +1280,16 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
       <td><a href="/api/osv">/api/osv</a></td>
       <td>%s &nbsp;<code>?project=</code></td>
     </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td><a href="/api/summary">/api/summary</a></td>
+      <td>%s</td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td><a href="/swagger">/swagger</a></td>
+      <td>%s</td>
+    </tr>
   </tbody>
 </table>
 </body>
@@ -1170,6 +1310,8 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		s.cve,
 		s.checkov,
 		s.osv,
+		s.summary,
+		s.swagger,
 	)
 	_ = altLang
 	_ = altLabel
@@ -1186,6 +1328,32 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(headerContentType, mimeApplicationJSON)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// handleSwaggerUI serves a minimal Swagger UI page that renders /openapi.yaml.
+// The UI assets are pulled from the swagger-ui-dist CDN, so the page needs
+// internet access in the browser; the spec itself is served locally.
+func handleSwaggerUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set(headerContentType, "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>DockScan API — Swagger UI</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.ui = SwaggerUIBundle({
+      url: 'openapi.yaml',
+      dom_id: '#swagger-ui',
+      deepLinking: true
+    });
+  </script>
+</body>
+</html>`))
 }
 
 // notModified sets the ETag from the current index and, when the client's
@@ -1670,7 +1838,7 @@ func internCVE(id string) string {
 
 // parseScanFile reads and summarizes a single Trivy JSON scan file.
 // It returns the per-file ScanSummary and the unique CVE IDs it contains.
-func parseScanFile(filePath, relPath, exportDir string, info os.FileInfo) (ScanSummary, []string) {
+func parseScanFile(filePath, relPath, exportDir string, info os.FileInfo) (ScanSummary, []string, map[string][]string) {
 	scanTime := extractTimestampFromPath(relPath, info.ModTime())
 
 	summary := ScanSummary{
@@ -1682,6 +1850,9 @@ func parseScanFile(filePath, relPath, exportDir string, info os.FileInfo) (ScanS
 
 	var projectName, imageName, tag string
 	var cveIDs []string
+	// cvesBySev groups the unique CVE IDs by their (first-seen) severity, e.g.
+	// {"CRITICAL": ["CVE-..."], "HIGH": [...]}. Powers the /api/summary feed.
+	cvesBySev := make(map[string][]string)
 	if report, err := parseTrivyJSON(filePath); err == nil {
 		summary.ArtifactName = report.ArtifactName
 
@@ -1701,7 +1872,9 @@ func parseScanFile(filePath, relPath, exportDir string, info os.FileInfo) (ScanS
 				if id := vuln.VulnerabilityID; id != "" {
 					if _, ok := seen[id]; !ok {
 						seen[id] = struct{}{}
-						cveIDs = append(cveIDs, internCVE(id))
+						interned := internCVE(id)
+						cveIDs = append(cveIDs, interned)
+						cvesBySev[severity] = append(cvesBySev[severity], interned)
 					}
 				}
 			}
@@ -1719,7 +1892,45 @@ func parseScanFile(filePath, relPath, exportDir string, info os.FileInfo) (ScanS
 
 	summary.ProjectName = projectName
 	summary.ImageName = imageName
-	return summary, cveIDs
+	return summary, cveIDs, cvesBySev
+}
+
+// parseMetaFile reads a meta-<image>.json deploy metadata file. The Image
+// field is taken from the JSON when present, otherwise derived from the
+// filename (meta-<image>.json -> <image>).
+func parseMetaFile(filePath, base string) (ScanMeta, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ScanMeta{}, err
+	}
+	// Strip UTF-8 BOM (PowerShell Out-File adds it).
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	data = bytes.TrimSpace(data)
+
+	var meta ScanMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return ScanMeta{}, err
+	}
+	if meta.Image == "" {
+		meta.Image = strings.TrimSuffix(strings.TrimPrefix(base, "meta-"), ".json")
+	}
+	return meta, nil
+}
+
+// imageKeyFromArtifact derives the join key used to match scans with meta
+// files. It strips the registry path and tag from a Trivy ArtifactName,
+// returning the trailing image segment (e.g.
+// "host:8090/repository/repo/dockscan_backend:latest" -> "dockscan_backend").
+func imageKeyFromArtifact(artifactName string) string {
+	name := artifactName
+	// Drop the tag, but only a real ":tag" — not a registry "host:port".
+	if i := strings.LastIndex(name, ":"); i > strings.LastIndex(name, "/") {
+		name = name[:i]
+	}
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	return name
 }
 
 func rebuildIndex(exportDir string) error {
@@ -1737,6 +1948,10 @@ func rebuildIndex(exportDir string) error {
 	scanCVEs := make([][]string, 0, len(jsonFiles))
 	checkovScans := make([]CheckovScanRecord, 0)
 	osvScans := make([]OsvScanRecord, 0)
+	// metas maps image key -> deploy metadata (loaded from meta-<image>.json).
+	metas := make(map[string]ScanMeta)
+	// cvesBySevByFile maps a scan's relPath -> CVE IDs grouped by severity.
+	cvesBySevByFile := make(map[string]map[string][]string)
 
 	seenPaths := make(map[string]struct{}, len(jsonFiles))
 	parsed, reused := 0, 0
@@ -1762,6 +1977,18 @@ func rebuildIndex(exportDir string) error {
 		fingerprint ^= h.Sum64()
 
 		base := filepath.Base(filePath)
+
+		if strings.HasPrefix(base, "meta-") {
+			meta, err := parseMetaFile(filePath, base)
+			if err != nil {
+				log.Printf("warning: failed to parse meta file %s: %v", relPath, err)
+				continue
+			}
+			if meta.Image != "" {
+				metas[meta.Image] = meta
+			}
+			continue
+		}
 
 		if strings.HasPrefix(base, "checkov-") {
 			if c, ok := checkovFileCache[filePath]; ok && c.modTime.Equal(info.ModTime()) && c.size == info.Size() {
@@ -1801,19 +2028,22 @@ func rebuildIndex(exportDir string) error {
 		if c, ok := fileCache[filePath]; ok && c.modTime.Equal(info.ModTime()) && c.size == info.Size() {
 			scans = append(scans, c.summary)
 			scanCVEs = append(scanCVEs, c.cveIDs)
+			cvesBySevByFile[c.summary.Filename] = c.cvesBySev
 			reused++
 			continue
 		}
 
-		summary, cveIDs := parseScanFile(filePath, relPath, exportDir, info)
+		summary, cveIDs, cvesBySev := parseScanFile(filePath, relPath, exportDir, info)
 		fileCache[filePath] = &fileCacheEntry{
-			modTime: info.ModTime(),
-			size:    info.Size(),
-			summary: summary,
-			cveIDs:  cveIDs,
+			modTime:   info.ModTime(),
+			size:      info.Size(),
+			summary:   summary,
+			cveIDs:    cveIDs,
+			cvesBySev: cvesBySev,
 		}
 		scans = append(scans, summary)
 		scanCVEs = append(scanCVEs, cveIDs)
+		cvesBySevByFile[summary.Filename] = cvesBySev
 		parsed++
 	}
 
@@ -1936,9 +2166,11 @@ func rebuildIndex(exportDir string) error {
 		CheckovScans: checkovScans,
 		OsvScans:     osvScans,
 		GeneratedAt:  generatedAt,
-		cveIndex:     cveIndex,
-		imageScans:   imageScans,
-		etag:         fmt.Sprintf(`"%x-%d"`, fingerprint, len(scans)),
+		cveIndex:        cveIndex,
+		imageScans:      imageScans,
+		metas:           metas,
+		cvesBySevByFile: cvesBySevByFile,
+		etag:            fmt.Sprintf(`"%x-%d"`, fingerprint, len(scans)),
 	}
 
 	indexMu.Lock()

@@ -1,0 +1,464 @@
+openapi: 3.0.3
+info:
+  title: DockScan Backend API
+  description: >
+    Container & IaC security scan dashboard API. Serves Trivy, Checkov and
+    OSV-Scanner results from the export directory, plus a flattened
+    `/api/summary` feed (IP, app, image, grade, last scan) for external
+    dashboards.
+  version: "1.0.0"
+servers:
+  - url: /
+    description: Same-origin (served behind nginx / directly)
+tags:
+  - name: meta
+    description: Health & maintenance
+  - name: scans
+    description: Trivy scan data
+  - name: projects
+    description: Project / image rollups
+  - name: security
+    description: Checkov & OSV-Scanner results
+  - name: feed
+    description: Aggregated summary feed for external consumers
+
+paths:
+  /health:
+    get:
+      tags: [meta]
+      summary: Health check
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /api/reload:
+    post:
+      tags: [meta]
+      summary: Force an immediate index rebuild
+      description: Called by CI/CD after a scan completes to avoid the periodic ticker delay.
+      responses:
+        "200":
+          description: Index rebuilt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  message: { type: string, example: index rebuilt }
+        "500":
+          description: Rebuild failed
+
+  /api/summary:
+    get:
+      tags: [feed]
+      summary: Flattened latest-scan feed (IP, app, image, grade, date)
+      description: >
+        One row per project/image, reflecting the latest scan. Designed as a
+        single dashboard feed other servers can consume. `ip` and `appName`
+        come from optional `meta-<image>.json` files written by the trigger
+        scripts; `ip` is empty when no metadata exists.
+      responses:
+        "200":
+          description: Summary rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SummaryRow"
+        "503":
+          description: Index not ready yet
+
+  /api/scans:
+    get:
+      tags: [scans]
+      summary: List all Trivy scan summaries
+      responses:
+        "200":
+          description: Scan summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScanSummary"
+        "304":
+          description: Not modified (ETag match)
+        "503":
+          description: Index not ready yet
+
+  /api/scans/{path}:
+    get:
+      tags: [scans]
+      summary: Vulnerability details for a specific scan file
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: Relative scan file path under the export dir (subdirectories allowed).
+          schema: { type: string }
+          example: dockscan/dockscan_backend-latest-20260608-014003.json
+      responses:
+        "200":
+          description: Scan detail with flattened vulnerabilities
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  artifactName: { type: string }
+                  artifactType: { type: string }
+                  totalVulns: { type: integer }
+                  vulnerabilities:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/VulnDetail"
+        "404":
+          description: File not found or unparseable
+
+  /api/projects:
+    get:
+      tags: [projects]
+      summary: List all projects with summaries
+      responses:
+        "200":
+          description: Project summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProjectSummary"
+
+  /api/projects/{projectName}:
+    get:
+      tags: [projects]
+      summary: Project detail (images + scans)
+      parameters:
+        - name: projectName
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Project detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectSummary"
+        "404":
+          description: Project not found
+
+  /api/projects/{projectName}/images/{imageName}/scans:
+    get:
+      tags: [projects]
+      summary: Scan history for a specific image
+      parameters:
+        - name: projectName
+          in: path
+          required: true
+          schema: { type: string }
+        - name: imageName
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Scan history (newest first)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScanSummary"
+
+  /api/grades:
+    get:
+      tags: [projects]
+      summary: Security grade (A–F) per project/image
+      parameters:
+        - name: project
+          in: query
+          required: false
+          description: Filter to a single project.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Grades
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GradesResponse"
+        "404":
+          description: Project not found (when project filter set)
+
+  /api/compare:
+    get:
+      tags: [scans]
+      summary: Compare two scans
+      parameters:
+        - name: scan1
+          in: query
+          required: true
+          schema: { type: string }
+        - name: scan2
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Diff result
+        "400":
+          description: Missing/invalid parameters
+
+  /api/cve/{cveId}:
+    get:
+      tags: [scans]
+      summary: Find which scans contain a given CVE
+      parameters:
+        - name: cveId
+          in: path
+          required: true
+          schema: { type: string }
+          example: CVE-2023-1234
+      responses:
+        "200":
+          description: Matching projects/images
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CVESearchResult"
+
+  /api/checkov:
+    get:
+      tags: [security]
+      summary: Checkov IaC scan results
+      parameters:
+        - name: project
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Checkov records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CheckovScanRecord"
+
+  /api/osv:
+    get:
+      tags: [security]
+      summary: OSV-Scanner dependency results
+      parameters:
+        - name: project
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: OSV records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OsvScanRecord"
+
+components:
+  schemas:
+    SeverityCount:
+      type: object
+      additionalProperties: { type: integer }
+      example: { CRITICAL: 1, HIGH: 4, MEDIUM: 9, LOW: 12 }
+
+    SummaryRow:
+      type: object
+      properties:
+        appName: { type: string, example: dockscan }
+        projectName: { type: string, example: dockscan }
+        imageName: { type: string, example: backend }
+        image: { type: string, description: Full image identifier (project_image), join key for metadata, example: dockscan_backend }
+        tag: { type: string, example: latest }
+        ip: { type: string, description: Deploy IP from meta-<image>.json; empty when unknown, example: 192.168.1.10 }
+        grade: { type: string, enum: [A, B, C, D, F] }
+        totalVulns: { type: integer }
+        severityCount: { $ref: "#/components/schemas/SeverityCount" }
+        cves:
+          type: object
+          description: Unique CVE IDs of the latest scan, grouped by severity.
+          additionalProperties:
+            type: array
+            items: { type: string }
+          example:
+            CRITICAL: [CVE-2024-0001]
+            HIGH: [CVE-2024-1111, CVE-2024-2222]
+            MEDIUM: []
+            LOW: []
+        lastScan: { type: string, format: date-time }
+
+    ScanSummary:
+      type: object
+      properties:
+        filename: { type: string }
+        size: { type: integer, format: int64 }
+        modifiedAt: { type: string, format: date-time }
+        artifactName: { type: string }
+        projectName: { type: string }
+        imageName: { type: string }
+        tag: { type: string }
+        totalVulns: { type: integer }
+        severityCount: { $ref: "#/components/schemas/SeverityCount" }
+        grade: { type: string, enum: [A, B, C, D, F] }
+
+    ImageSummary:
+      type: object
+      properties:
+        imageName: { type: string }
+        totalVulns: { type: integer }
+        severityCount: { $ref: "#/components/schemas/SeverityCount" }
+        grade: { type: string }
+        lastScan: { type: string, format: date-time }
+        scanCount: { type: integer }
+        scans:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScanSummary"
+
+    ProjectSummary:
+      type: object
+      properties:
+        projectName: { type: string }
+        totalScans: { type: integer }
+        totalVulns: { type: integer }
+        severityCount: { $ref: "#/components/schemas/SeverityCount" }
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageSummary"
+        lastScan: { type: string, format: date-time }
+
+    VulnDetail:
+      type: object
+      properties:
+        VulnerabilityID: { type: string }
+        PkgName: { type: string }
+        InstalledVersion: { type: string }
+        FixedVersion: { type: string }
+        Severity: { type: string }
+        Title: { type: string }
+        PrimaryURL: { type: string }
+
+    ImageGrade:
+      type: object
+      properties:
+        imageName: { type: string }
+        grade: { type: string }
+        totalVulns: { type: integer }
+        severityCount: { $ref: "#/components/schemas/SeverityCount" }
+        scanCount: { type: integer }
+        lastScanDate: { type: string, format: date-time }
+        firstScanDate: { type: string, format: date-time }
+
+    ProjectGrade:
+      type: object
+      properties:
+        projectName: { type: string }
+        imageCount: { type: integer }
+        grade: { type: string }
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageGrade"
+
+    GradesResponse:
+      type: object
+      properties:
+        generatedAt: { type: string, format: date-time }
+        projects:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProjectGrade"
+
+    CVESearchResult:
+      type: object
+      properties:
+        cveId: { type: string }
+        projects:
+          type: array
+          items:
+            type: object
+            properties:
+              projectName: { type: string }
+              images:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    imageName: { type: string }
+                    tag: { type: string }
+                    scanCount: { type: integer }
+                    latestScan: { $ref: "#/components/schemas/ScanSummary" }
+
+    CheckovScanRecord:
+      type: object
+      properties:
+        filename: { type: string }
+        projectName: { type: string }
+        serviceName: { type: string }
+        tag: { type: string }
+        scannedAt: { type: string, format: date-time }
+        passed: { type: integer }
+        failed: { type: integer }
+        skipped: { type: integer }
+        findings:
+          type: array
+          items:
+            type: object
+            properties:
+              checkId: { type: string }
+              name: { type: string }
+              filePath: { type: string }
+              line: { type: integer }
+
+    OsvScanRecord:
+      type: object
+      properties:
+        filename: { type: string }
+        projectName: { type: string }
+        serviceName: { type: string }
+        tag: { type: string }
+        scannedAt: { type: string, format: date-time }
+        totalVulns: { type: integer }
+        sources:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              type: { type: string }
+              packages:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    version: { type: string }
+                    ecosystem: { type: string }
+                    vulnCount: { type: integer }
+                    vulns:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          id: { type: string }
+                          summary: { type: string }

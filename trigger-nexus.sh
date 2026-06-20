@@ -12,18 +12,22 @@ TRIVY_DB_PATH="/app/DockScan/trivy-db"
 # ---------------------------------------------------------------------------
 IMAGE_NAME=""
 TAG=""
+IP=""
+APP_NAME=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --image) IMAGE_NAME="$2"; shift 2 ;;
         --tag)   TAG="$2";        shift 2 ;;
+        --ip)    IP="$2";         shift 2 ;;   # opsiyonel: deploy IP (/api/summary için)
+        --app)   APP_NAME="$2";   shift 2 ;;   # opsiyonel: uygulama/proje adı
         *) echo "[ERROR] Bilinmeyen argüman: $1" >&2; exit 1 ;;
     esac
 done
 
 if [[ -z "$IMAGE_NAME" || -z "$TAG" ]]; then
-    echo "Kullanım: $0 --image <imaj_adı> --tag <tag>"
-    echo "Örnek   : $0 --image DockScan_backend --tag test-v1.0"
+    echo "Kullanım: $0 --image <imaj_adı> --tag <tag> [--ip <ip>] [--app <app_adı>]"
+    echo "Örnek   : $0 --image DockScan_backend --tag test-v1.0 --ip 192.168.1.10 --app dockscan"
     echo "Örnek   : $0 --image DockScan_frontend --tag test-v1.0"
     exit 1
 fi
@@ -61,6 +65,18 @@ docker run --rm \
 
 chmod 644 "$OUTPUT_FILE" 2>/dev/null || true
 echo "[INFO] Tarama tamamlandı: $OUTPUT_FILE"
+
+# ---------------------------------------------------------------------------
+# Deploy metadata (IP / app) — /api/summary beslemesi için.
+# Sadece --ip veya --app verildiğinde yazılır; backend bunu ArtifactName'in
+# imaj kısmı (IMAGE_NAME) üzerinden tarama verisiyle eşler.
+# ---------------------------------------------------------------------------
+if [[ -n "$IP" || -n "$APP_NAME" ]]; then
+    META_FILE="$EXPORT_DIR/meta-${IMAGE_NAME}.json"
+    printf '{"image":"%s","appName":"%s","ip":"%s"}\n' "$IMAGE_NAME" "$APP_NAME" "$IP" > "$META_FILE"
+    chmod 644 "$META_FILE" 2>/dev/null || true
+    echo "[INFO] Metadata yazıldı: $META_FILE (ip=$IP, app=$APP_NAME)"
+fi
 
 # ---------------------------------------------------------------------------
 # Index'i hemen yenile (1-2 dk'lık ticker gecikmesini önler)
