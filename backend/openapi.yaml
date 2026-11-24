@@ -55,6 +55,102 @@ paths:
         "500":
           description: Rebuild failed
 
+  /api/cleanup:
+    post:
+      tags: [meta]
+      summary: Delete old scans, keeping the newest 5 per image directory
+      description: Also runs automatically every 24 hours. `meta-*.json` and the `.manifests` directory are never touched.
+      responses:
+        "200":
+          description: Cleanup done, index rebuilt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  deleted: { type: integer }
+                  kept: { type: integer }
+
+  /api/manifest:
+    post:
+      tags: [meta]
+      summary: Report a project's active image list
+      description: >
+        Called by CI/CD on every build. Images of a covered project that are
+        not in any manifest are marked `retired`: they stay visible but are
+        excluded from grades, totals, `/api/summary` and `/api/sbom`. Several
+        pipelines may report for the same project; their lists are unioned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source, images]
+              properties:
+                source: { type: string, example: dockscan-test, description: "Pipeline id, used as file name" }
+                app: { type: string, example: dockscan }
+                images:
+                  type: array
+                  items: { type: string }
+                  example: [dockscan_backend, dockscan_frontend]
+      responses:
+        "200":
+          description: Manifest stored, index rebuilt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  source: { type: string }
+                  images: { type: integer }
+                  retiredImages: { type: array, items: { type: string } }
+        "400":
+          description: Invalid body, empty image list or invalid source
+
+  /api/manifests:
+    get:
+      tags: [meta]
+      summary: Reported manifests and their retired images
+      responses:
+        "200":
+          description: Manifests
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  generatedAt: { type: string, format: date-time }
+                  manifests:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ManifestInfo"
+
+  /api/sbom:
+    get:
+      tags: [projects]
+      summary: Technology inventory from each image's latest scan
+      description: OS, `*_VERSION` env vars, language package types and (optionally) installed packages. No vulnerabilities.
+      parameters:
+        - name: project
+          in: query
+          required: false
+          schema: { type: string }
+        - name: packages
+          in: query
+          required: false
+          description: "`0` omits the package list."
+          schema: { type: string, enum: ["0", "1"] }
+      responses:
+        "200":
+          description: Inventory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SbomResponse"
+
   /api/summary:
     get:
       tags: [feed]
@@ -187,7 +283,12 @@ paths:
         - name: project
           in: query
           required: false
-          description: Filter to a single project.
+          description: Filter to a single project (`_` and `-` are treated the same).
+          schema: { type: string }
+        - name: tag
+          in: query
+          required: false
+          description: Grade only from the latest scan of this tag (e.g. `test-v1.0`).
           schema: { type: string }
       responses:
         "200":
@@ -329,6 +430,7 @@ components:
         grade: { type: string }
         lastScan: { type: string, format: date-time }
         scanCount: { type: integer }
+        retired: { type: boolean, description: "Not in the project's manifest; excluded from grades and totals" }
         scans:
           type: array
           items:
@@ -379,6 +481,9 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ImageGrade"
+        retiredImages:
+          type: array
+          items: { type: string }
 
     GradesResponse:
       type: object
@@ -388,6 +493,55 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ProjectGrade"
+
+    ManifestInfo:
+      type: object
+      properties:
+        source: { type: string }
+        app: { type: string }
+        images: { type: array, items: { type: string } }
+        updatedAt: { type: string, format: date-time }
+        retiredImages: { type: array, items: { type: string } }
+
+    SbomResponse:
+      type: object
+      properties:
+        generatedAt: { type: string, format: date-time }
+        projects:
+          type: array
+          items:
+            type: object
+            properties:
+              projectName: { type: string }
+              images:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    imageName: { type: string }
+                    tag: { type: string }
+                    scannedAt: { type: string, format: date-time }
+                    os:
+                      type: object
+                      properties:
+                        family: { type: string }
+                        version: { type: string }
+                    env:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          key: { type: string }
+                          value: { type: string }
+                    languages: { type: array, items: { type: string } }
+                    packages:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          name: { type: string }
+                          version: { type: string }
+                          type: { type: string }
 
     CVESearchResult:
       type: object

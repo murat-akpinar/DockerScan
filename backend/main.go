@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,8 +34,11 @@ const (
 	defaultExportDir         = "/app/export"
 	indexRebuildIntervalSec  = 60
 	cleanupIntervalHours     = 24
-	cleanupRetentionDays     = 30
+	cleanupKeepLatest        = 5            // her imaj dizini için tutulacak en yeni tarama sayısı
+	manifestDirName          = ".manifests" // export altında aktif imaj bildirimleri
+	manifestMaxBodyBytes     = 1 << 16      // 64 KiB
 	errReadExportDirectory   = "failed to read export directory"
+	errIndexRebuildFailed    = "index rebuild failed: "
 	errEncodeResponse        = "failed to encode response"
 	errInvalidFilename       = "invalid filename"
 )
@@ -79,6 +81,9 @@ type ScanMeta struct {
 	Image   string `json:"image"`   // join key, equals ArtifactName image part (e.g. "dockscan_backend")
 	AppName string `json:"appName"` // human app/project name
 	IP      string `json:"ip"`      // deploy target IP (may be comma-separated)
+	// builtAt is the meta file's modification time: when a pipeline last
+	// scanned this image (nightly scans don't write meta). Used by manifests.
+	builtAt time.Time
 }
 
 // SummaryRow is one row of the /api/summary feed: the latest scan per
@@ -202,6 +207,11 @@ func walkJSONFiles(rootDir string) ([]string, error) {
 			// Diğer hatalar için de skip et (dosya silinmiş olabilir vs.)
 			return nil
 		}
+		// Nokta ile başlayan dizinler tarama değil (ör. .manifests): içerikleri
+		// index'e girerse ".manifests" adlı hayalet bir proje görünür.
+		if info.IsDir() && path != rootDir && strings.HasPrefix(info.Name(), ".") {
+			return filepath.SkipDir
+		}
 		if !info.IsDir() && filepath.Ext(path) == ".json" {
 			jsonFiles = append(jsonFiles, path)
 		}
@@ -239,22 +249,55 @@ type ImageSummary struct {
 	Grade         string         `json:"grade"`
 	LastScan      time.Time      `json:"lastScan"`
 	ScanCount     int            `json:"scanCount"`
-	Scans         []ScanSummary  `json:"scans,omitempty"` // All scans for this image
+	// Retired: imaj registry'de duruyor ve gecelik tarama onu taramaya devam
+	// ediyor, ama projenin manifestinde artık yok. Geçmişi görünür kalsın diye
+	// listeden atılmıyor, yalnız nota, toplamlara ve envantere katılmıyor.
+	Retired bool          `json:"retired,omitempty"`
+	Scans   []ScanSummary `json:"scans,omitempty"` // All scans for this image
 }
 
 // Trivy JSON structures
 type TrivyReport struct {
-	SchemaVersion int      `json:"SchemaVersion"`
-	ArtifactName  string   `json:"ArtifactName"`
-	ArtifactType  string   `json:"ArtifactType"`
-	Results       []Result `json:"Results"`
+	SchemaVersion int           `json:"SchemaVersion"`
+	ArtifactName  string        `json:"ArtifactName"`
+	ArtifactType  string        `json:"ArtifactType"`
+	Metadata      TrivyMetadata `json:"Metadata"`
+	Results       []Result      `json:"Results"`
+}
+
+// TrivyMetadata — /api/sbom için teknoloji envanteri kaynağı. OS ve
+// ImageConfig.Config.Env, taranan imajın gerçekte hangi OS ve runtime sürümünü
+// taşıdığını söyler: resmi base image'lar NODE_VERSION / PYTHON_VERSION /
+// NGINX_VERSION gibi değişkenleri kendileri export eder.
+type TrivyMetadata struct {
+	OS          TrivyOS          `json:"OS"`
+	ImageConfig TrivyImageConfig `json:"ImageConfig"`
+}
+
+type TrivyOS struct {
+	Family string `json:"Family"`
+	Name   string `json:"Name"`
+}
+
+type TrivyImageConfig struct {
+	Config struct {
+		Env []string `json:"Env"` // "KEY=value" biçiminde
+	} `json:"config"` // Trivy bu alanı küçük harfle yazar
 }
 
 type Result struct {
 	Target          string          `json:"Target"`
 	Class           string          `json:"Class"`
 	Type            string          `json:"Type"`
+	Packages        []Package       `json:"Packages,omitempty"`
 	Vulnerabilities []Vulnerability `json:"Vulnerabilities"`
+}
+
+// Package — kurulu paket listesi. Trivy (SchemaVersion 2) bunu JSON çıktısında
+// varsayılan olarak doldurur; --list-all-pkgs bayrağı gerekmez.
+type Package struct {
+	Name    string `json:"Name"`
+	Version string `json:"Version"`
 }
 
 type Vulnerability struct {
@@ -355,6 +398,9 @@ type ProjectGrade struct {
 	ImageCount  int          `json:"imageCount"`
 	Grade       string       `json:"grade"`
 	Images      []ImageGrade `json:"images"`
+	// RetiredImages: nota katılmayan, manifest dışı imajlar. Quality gate bunu
+	// log'a basabilsin diye dönüyor.
+	RetiredImages []string `json:"retiredImages,omitempty"`
 }
 
 type GradesResponse struct {
@@ -417,13 +463,86 @@ func main() {
 	// Force an immediate index rebuild (called by CI/CD after a scan completes)
 	r.Post("/api/reload", func(w http.ResponseWriter, r *http.Request) {
 		if err := rebuildIndex(exportDir); err != nil {
-			http.Error(w, "index rebuild failed: "+err.Error(), http.StatusInternalServerError)
+			http.Error(w, errIndexRebuildFailed+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set(headerContentType, mimeApplicationJSON)
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, `{"status":"ok","message":"index rebuilt"}`)
 	})
+
+	// Her imaj dizininde en yeni taramalar hariç eskilerini sil (24 saatte bir otomatik de çalışır).
+	r.Post("/api/cleanup", func(w http.ResponseWriter, r *http.Request) {
+		deleted, kept := cleanupOldExports(exportDir)
+		if err := rebuildIndex(exportDir); err != nil {
+			http.Error(w, errIndexRebuildFailed+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set(headerContentType, mimeApplicationJSON)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{"status":"ok","deleted":%d,"kept":%d}`+"\n", deleted, kept)
+	})
+
+	// Projenin aktif imaj listesini bildir (pipeline her build'de çağırır).
+	// Bildirim olmadan dashboard projeyi export/ altında ne bulduğundan türetmek
+	// zorunda; export'u da gecelik tarama dolduruyor → projeden çıkarılmış
+	// imajlar geri geliyor. Ayrıntı: manifest.go
+	r.Post("/api/manifest", func(w http.ResponseWriter, r *http.Request) {
+		var req Manifest
+		// Gövde sınırı: kaynak güvenilmeyen (pipeline) ve tek bir hatalı çağrı
+		// belleği şişirmemeli.
+		dec := json.NewDecoder(io.LimitReader(r.Body, manifestMaxBodyBytes))
+		if err := dec.Decode(&req); err != nil {
+			http.Error(w, "invalid manifest body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(normalizeManifestImages(req.Images)) == 0 {
+			// Boş liste projenin TÜM imajlarını retired yapardı.
+			http.Error(w, "manifest images cannot be empty", http.StatusBadRequest)
+			return
+		}
+		req.UpdatedAt = time.Now()
+		if err := storeManifest(exportDir, req); err != nil {
+			http.Error(w, "manifest store failed: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		// Index hemen yenileniyor: gate aynı build içinde sorduğunda retired
+		// imaj zaten nottan düşmüş olsun.
+		if err := rebuildIndex(exportDir); err != nil {
+			http.Error(w, errIndexRebuildFailed+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set(headerContentType, mimeApplicationJSON)
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":        "ok",
+			"source":        req.Source,
+			"images":        len(normalizeManifestImages(req.Images)),
+			"retiredImages": retiredImagesForManifest(req),
+		}); err != nil {
+			log.Printf("manifest: yanit yazilamadi: %v", err)
+		}
+	})
+
+	// Bildirilen manifestler ve her birinin kapsamı dışında kalan (registry'de
+	// duran ama projeye ait olmayan) imajlar. Registry temizliği için çalışma listesi.
+	r.Get("/api/manifests", func(w http.ResponseWriter, r *http.Request) {
+		manifests := loadManifests(exportDir)
+		infos := make([]ManifestInfo, 0, len(manifests))
+		for _, m := range manifests {
+			infos = append(infos, ManifestInfo{Manifest: m, RetiredImages: retiredImagesForManifest(m)})
+		}
+		w.Header().Set(headerContentType, mimeApplicationJSON)
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"generatedAt": time.Now(),
+			"manifests":   infos,
+		}); err != nil {
+			http.Error(w, errEncodeResponse, http.StatusInternalServerError)
+		}
+	})
+
+	// Teknoloji envanteri: OS, runtime sürümleri, paketler. Ayrıntı: sbom.go
+	r.Get("/api/sbom", handleSbom(exportDir))
 
 	// List all scans with vulnerability summaries
 	r.Get("/api/scans", func(w http.ResponseWriter, r *http.Request) {
@@ -491,7 +610,7 @@ func main() {
 		}
 
 		for _, p := range current.Projects {
-			if p.ProjectName == projectName {
+			if projectNameMatches(p.ProjectName, projectName) {
 				w.Header().Set(headerContentType, mimeApplicationJSON)
 				if err := json.NewEncoder(w).Encode(p); err != nil {
 					http.Error(w, errEncodeResponse, http.StatusInternalServerError)
@@ -708,8 +827,8 @@ func main() {
 		for projectName, images := range projectImageScans {
 			var imageResults []CVEImageResult
 			for imageName, scans := range images {
-				// Sort scans by tag and date (newest first)
-				sortScansByTagAndDate(scans)
+				// Taramalar yeniden eskiye
+				sortScansByDate(scans)
 
 				// Get latest scan
 				var latestScan ScanSummary
@@ -760,6 +879,10 @@ func main() {
 	// Grade summary per project / image based on latest scan vulnerability counts
 	r.Get("/api/grades", func(w http.ResponseWriter, r *http.Request) {
 		projectFilter := r.URL.Query().Get("project")
+		// ?tag=X → notu YALNIZ o etiketin son taramasından hesapla. Gate
+		// "app:test-v1.0" için sorarken aynı imajın eski test-v2.0 taraması
+		// nota karışmamalı.
+		tagFilter := strings.TrimSpace(r.URL.Query().Get("tag"))
 
 		indexMu.RLock()
 		current := indexData
@@ -777,26 +900,43 @@ func main() {
 		var projectGrades []ProjectGrade
 
 		for _, p := range current.Projects {
-			if projectFilter != "" && p.ProjectName != projectFilter {
+			if projectFilter != "" && !projectNameMatches(p.ProjectName, projectFilter) {
 				continue
 			}
 
 			var imageGrades []ImageGrade
+			var retiredImages []string
 			for _, img := range p.Images {
-				var firstScanDate time.Time
-				if len(img.Scans) > 0 {
-					firstScanDate = img.Scans[len(img.Scans)-1].ModifiedAt
+				// Manifest dışı imaj nota girmez: projeden çıkarılmış ya da adı
+				// değişmiş imaj registry'de kaldığı için gecelik tarama onu
+				// gate'in sorduğu tag'le geri getirebiliyor.
+				if img.Retired {
+					retiredImages = append(retiredImages, img.ImageName)
+					continue
+				}
+				scans := scansForTag(img.Scans, tagFilter)
+				latest, ok := latestScanByDate(scans)
+				if !ok {
+					// Bu imajın istenen etiketle taraması yok → nota katılmaz.
+					continue
 				}
 
+				severity := copySeverityCount(latest.SeverityCount)
 				imageGrades = append(imageGrades, ImageGrade{
 					ImageName:     img.ImageName,
-					Grade:         computeGrade(img.SeverityCount),
-					TotalVulns:    img.TotalVulns,
-					SeverityCount: img.SeverityCount,
-					ScanCount:     img.ScanCount,
-					LastScanDate:  img.LastScan,
-					FirstScanDate: firstScanDate,
+					Grade:         computeGrade(severity),
+					TotalVulns:    latest.TotalVulns,
+					SeverityCount: severity,
+					ScanCount:     len(scans),
+					LastScanDate:  latest.ModifiedAt,
+					FirstScanDate: oldestScanDate(scans),
 				})
+			}
+
+			if len(imageGrades) == 0 {
+				// Etikete uyan imaj yok: projeyi listelemeyelim, gate bunu
+				// "henüz indexlenmedi" sayıp yeniden denesin.
+				continue
 			}
 
 			sort.Slice(imageGrades, func(i, j int) bool {
@@ -808,30 +948,14 @@ func main() {
 				return imageGrades[i].ImageName < imageGrades[j].ImageName
 			})
 
-			worstGrade := "A"
-			goodCount := 0
-			for _, ig := range imageGrades {
-				if gradeOrder(ig.Grade) > gradeOrder(worstGrade) {
-					worstGrade = ig.Grade
-				}
-				if ig.Grade == "A" || ig.Grade == "B" {
-					goodCount++
-				}
-			}
-
-			// Çoğunluk imaj iyi (A/B) ise proje notunu bir kademe yumuşat.
-			// Böylece tek sorunlu imaj tüm projeyi aşağı çekmez; sorunlu
-			// imaj kendi notuyla listede görünmeye devam eder.
-			projectGrade := worstGrade
-			if goodCount > len(imageGrades)/2 {
-				projectGrade = softenGrade(worstGrade)
-			}
-
+			// ImageCount nota giren imaj sayısı (len(p.Images) değil): kutuda
+			// "C (4 imaj)" yazıp altında 3 imaj listelenmesin.
 			projectGrades = append(projectGrades, ProjectGrade{
-				ProjectName: p.ProjectName,
-				ImageCount:  len(p.Images),
-				Grade:       projectGrade,
-				Images:      imageGrades,
+				ProjectName:   p.ProjectName,
+				ImageCount:    len(imageGrades),
+				Grade:         computeProjectGrade(imageGrades),
+				Images:        imageGrades,
+				RetiredImages: retiredImages,
 			})
 		}
 
@@ -940,6 +1064,9 @@ func main() {
 		rows := make([]SummaryRow, 0)
 		for _, p := range current.Projects {
 			for _, img := range p.Images {
+				if img.Retired {
+					continue
+				}
 				var artifactName, tag, latestFile string
 				if len(img.Scans) > 0 {
 					artifactName = img.Scans[0].ArtifactName
@@ -1019,30 +1146,89 @@ func main() {
 	}
 }
 
-// sortScansByTagAndDate sorts scans in-place:
-// - newer semantic version tags first (using compareVersionTags),
-// - for same tag, newer ModifiedAt first,
-// - scans without tag come after tagged ones.
-func sortScansByTagAndDate(scans []ScanSummary) {
+// sortScansByDate, taramaları YENİDEN ESKİYE sıralar.
+//
+// Önceden etiket SÜRÜMÜNE göre sıralanıyordu ve Scans[0] "en yeni" kabul edildiği
+// için /api/summary, /api/sbom ve arayüzdeki "Tarama Geçmişi" eski bir taramayı
+// en yeni sanabiliyordu: aynı imajın prod-v1.0 (11:33:19) ve test-v1.0 (11:33:17)
+// taramaları varken "prod" < "test" olduğu için EN YENİ tarama sona düşüyordu.
+//
+// Eşit tarihte dosya adı: aynı saniyede yazılmış iki tarama arasında sıra
+// rastgele kalmasın (sort.Slice kararlı değil).
+func sortScansByDate(scans []ScanSummary) {
 	sort.Slice(scans, func(i, j int) bool {
-		tagI := scans[i].Tag
-		tagJ := scans[j].Tag
-
-		if tagI != "" && tagJ != "" {
-			cmp := compareVersionTags(tagI, tagJ)
-			if cmp < 0 {
-				return false
-			} else if cmp > 0 {
-				return true
-			}
+		if !scans[i].ModifiedAt.Equal(scans[j].ModifiedAt) {
 			return scans[i].ModifiedAt.After(scans[j].ModifiedAt)
-		} else if tagI == "" && tagJ == "" {
-			return scans[i].ModifiedAt.After(scans[j].ModifiedAt)
-		} else if tagI == "" {
-			return false
 		}
-		return true
+		return scans[i].Filename < scans[j].Filename
 	})
+}
+
+// latestScanByDate, taramalar arasından en YENİ tarihli olanı döndürür.
+// Konumdan bağımsız okur: sıralama bir gün değişirse "son tarama" sessizce
+// yanlışlanmasın.
+func latestScanByDate(scans []ScanSummary) (ScanSummary, bool) {
+	var best ScanSummary
+	found := false
+	for _, s := range scans {
+		if !found || s.ModifiedAt.After(best.ModifiedAt) {
+			best = s
+			found = true
+		}
+	}
+	return best, found
+}
+
+// oldestScanDate, taramalar arasındaki en eski tarihi döndürür.
+func oldestScanDate(scans []ScanSummary) time.Time {
+	var oldest time.Time
+	for _, s := range scans {
+		if oldest.IsZero() || s.ModifiedAt.Before(oldest) {
+			oldest = s.ModifiedAt
+		}
+	}
+	return oldest
+}
+
+// scansForTag, yalnız verilen etikete ait taramaları süzer. Etiket boşsa tümü döner.
+func scansForTag(scans []ScanSummary, tag string) []ScanSummary {
+	if tag == "" {
+		return scans
+	}
+	out := make([]ScanSummary, 0, len(scans))
+	for _, s := range scans {
+		if s.Tag == tag {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// copySeverityCount, haritayı kopyalar (nil ise boş harita döner).
+func copySeverityCount(src map[string]int) map[string]int {
+	dst := make(map[string]int, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// normalizeProjectName, proje adlarını karşılaştırma için eşitler: küçük harf +
+// alt çizgi yerine tire.
+//
+// Index'teki proje adı imaj adından türüyor ("my-app_backend" → "my-app"), CI ise
+// quality gate'i çoğu zaman kendi değişkeniyle soruyor ("my_app"). İkisi ayrışınca
+// /api/grades 404 dönüyor, gate de bunu "henüz indexlenmedi" sanıp bekliyordu.
+//
+// Ayıraç SİLİNMİYOR, yalnız eşitleniyor: "myapp" ile "my-app" iki ayrı proje
+// olabilir ve birbirine karışmamalı.
+func normalizeProjectName(name string) string {
+	return strings.ToLower(strings.ReplaceAll(name, "_", "-"))
+}
+
+// projectNameMatches, sorgudaki ad ile index'teki adı ayıraç-duyarsız karşılaştırır.
+func projectNameMatches(indexName, query string) bool {
+	return normalizeProjectName(indexName) == normalizeProjectName(query)
 }
 
 // computeAllowedOrigins builds the CORS allowed origins list based on env vars.
@@ -1111,6 +1297,10 @@ type rootStrings struct {
 	osv         string
 	summary     string
 	swagger     string
+	cleanup     string
+	manifest    string
+	manifests   string
+	sbom        string
 }
 
 var rootTR = rootStrings{
@@ -1133,6 +1323,10 @@ var rootTR = rootStrings{
 	osv:        "OSV-Scanner bağımlılık zafiyet sonuçları",
 	summary:    "Tüm imajların özet beslemesi (IP, app, imaj, not, son tarama)",
 	swagger:    "Swagger UI — interaktif API dokümantasyonu",
+	cleanup:    "Her imaj için en yeni 5 tarama hariç eskileri sil",
+	manifest:   "Projenin aktif imaj listesini bildir (CI/CD)",
+	manifests:  "Bildirilen manifestler ve kapsam dışı (retired) imajlar",
+	sbom:       "Teknoloji envanteri: OS, runtime sürümleri, paketler",
 }
 
 var rootEN = rootStrings{
@@ -1155,6 +1349,10 @@ var rootEN = rootStrings{
 	osv:        "OSV-Scanner dependency vulnerability results",
 	summary:    "Flattened feed of all images (IP, app, image, grade, last scan)",
 	swagger:    "Swagger UI — interactive API documentation",
+	cleanup:    "Delete old scans, keeping the newest 5 per image",
+	manifest:   "Report a project's active image list (CI/CD)",
+	manifests:  "Reported manifests and out-of-scope (retired) images",
+	sbom:       "Technology inventory: OS, runtime versions, packages",
 }
 
 func detectLang(r *http.Request) string {
@@ -1231,6 +1429,21 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
       <td>%s</td>
     </tr>
     <tr>
+      <td><span class="badge bg-post">POST</span></td>
+      <td>/api/cleanup</td>
+      <td>%s</td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-post">POST</span></td>
+      <td>/api/manifest</td>
+      <td>%s</td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td><a href="/api/manifests">/api/manifests</a></td>
+      <td>%s</td>
+    </tr>
+    <tr>
       <td><span class="badge bg-get">GET</span></td>
       <td><a href="/api/scans">/api/scans</a></td>
       <td>%s</td>
@@ -1258,7 +1471,12 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
     <tr>
       <td><span class="badge bg-get">GET</span></td>
       <td><a href="/api/grades">/api/grades</a></td>
-      <td>%s &nbsp;<code>?project=</code></td>
+      <td>%s &nbsp;<code>?project=&amp;tag=</code></td>
+    </tr>
+    <tr>
+      <td><span class="badge bg-get">GET</span></td>
+      <td><a href="/api/sbom">/api/sbom</a></td>
+      <td>%s &nbsp;<code>?project=&amp;packages=0</code></td>
     </tr>
     <tr>
       <td><span class="badge bg-get">GET</span></td>
@@ -1300,12 +1518,16 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 		s.thMethod, s.thEndpoint, s.thDesc,
 		s.health,
 		s.reload,
+		s.cleanup,
+		s.manifest,
+		s.manifests,
 		s.scans,
 		s.scanDetail,
 		s.projects,
 		s.projectDet,
 		s.imageScans,
 		s.grades,
+		s.sbom,
 		s.compare,
 		s.cve,
 		s.checkov,
@@ -1665,74 +1887,6 @@ func extractTimestampSuffix(name string) (string, bool) {
 	return lastPart, true
 }
 
-// compareVersionTags compares two version tags (e.g., "6.7.1" vs "6.6.2")
-// Returns: -1 if tag1 < tag2, 0 if equal, 1 if tag1 > tag2
-// Handles semantic versioning properly by comparing numeric parts
-func compareVersionTags(tag1, tag2 string) int {
-	if tag1 == tag2 {
-		return 0
-	}
-	if tag1 == "" {
-		return -1 // Empty tag is considered older
-	}
-	if tag2 == "" {
-		return 1 // Empty tag is considered older
-	}
-
-	// Remove "v" prefix if present
-	tag1 = strings.TrimPrefix(tag1, "v")
-	tag2 = strings.TrimPrefix(tag2, "v")
-
-	// Split by dots to compare numeric parts
-	parts1 := strings.Split(tag1, ".")
-	parts2 := strings.Split(tag2, ".")
-
-	maxLen := len(parts1)
-	if len(parts2) > maxLen {
-		maxLen = len(parts2)
-	}
-
-	// Compare each part numerically
-	for i := 0; i < maxLen; i++ {
-		var num1, num2 int64
-		var err1, err2 error
-
-		if i < len(parts1) {
-			// Try to parse as number, if fails treat as string
-			num1, err1 = strconv.ParseInt(parts1[i], 10, 64)
-		}
-		if i < len(parts2) {
-			num2, err2 = strconv.ParseInt(parts2[i], 10, 64)
-		}
-
-		// Both are numbers
-		if err1 == nil && err2 == nil {
-			if num1 < num2 {
-				return -1
-			} else if num1 > num2 {
-				return 1
-			}
-		} else {
-			// At least one is not a number, do string comparison
-			str1 := ""
-			str2 := ""
-			if i < len(parts1) {
-				str1 = parts1[i]
-			}
-			if i < len(parts2) {
-				str2 = parts2[i]
-			}
-			if str1 < str2 {
-				return -1
-			} else if str1 > str2 {
-				return 1
-			}
-		}
-	}
-
-	return 0
-}
-
 // extractProjectImageTagFromArtifactName extracts project, image, and tag from ArtifactName
 // Format: {project-name}_{image-name}:{tag}
 // Example: "dockscan_backend:latest" -> project: "dockscan", image: "backend", tag: "latest"
@@ -1914,6 +2068,9 @@ func parseMetaFile(filePath, base string) (ScanMeta, error) {
 	if meta.Image == "" {
 		meta.Image = strings.TrimSuffix(strings.TrimPrefix(base, "meta-"), ".json")
 	}
+	if info, err := os.Stat(filePath); err == nil {
+		meta.builtAt = info.ModTime()
+	}
 	return meta, nil
 }
 
@@ -1942,6 +2099,10 @@ func rebuildIndex(exportDir string) error {
 	if err != nil {
 		return fmt.Errorf("%s: %w", errReadExportDirectory, err)
 	}
+
+	// Pipeline'ların bildirdiği aktif imaj listeleri. Manifesti olmayan proje
+	// etkilenmez; manifesti olan projede listede geçmeyen imaj "retired" olur.
+	active := buildActiveImageSet(loadManifests(exportDir))
 
 	scans := make([]ScanSummary, 0, len(jsonFiles))
 	// scanCVEs[i] holds the CVE IDs of scans[i] (kept aligned).
@@ -2104,34 +2265,46 @@ func rebuildIndex(exportDir string) error {
 	imageScans := make(map[string]map[string][]ScanSummary, len(projectsMap))
 
 	var projects []ProjectSummary
+	retiredTotal := 0
 	for projectName, project := range projectsMap {
 		project.TotalVulns = 0
 		project.SeverityCount = make(map[string]int)
+		// TotalScans tarama başına artırıldı; retired imajlar belli olunca
+		// yalnız aktif imajlardan yeniden sayılıyor.
+		project.TotalScans = 0
 		imageScans[projectName] = make(map[string][]ScanSummary, len(imagesMap[projectName]))
 
 		for imageName, imageSummary := range imagesMap[projectName] {
 			imgScans := imageSummary.Scans
-			sortScansByTagAndDate(imgScans)
+			sortScansByDate(imgScans)
 
 			imageSummary.ScanCount = len(imgScans)
 
-			if len(imgScans) > 0 {
-				latestScan := imgScans[0]
+			var lastBuild time.Time
+			if latestScan, ok := latestScanByDate(imgScans); ok {
 				imageSummary.LastScan = latestScan.ModifiedAt
 				imageSummary.TotalVulns = latestScan.TotalVulns
-				imageSummary.SeverityCount = make(map[string]int)
-				for k, v := range latestScan.SeverityCount {
-					imageSummary.SeverityCount[k] = v
-				}
+				imageSummary.SeverityCount = copySeverityCount(latestScan.SeverityCount)
 				imageSummary.Grade = computeGrade(imageSummary.SeverityCount)
+				lastBuild = metas[imageKeyFromArtifact(latestScan.ArtifactName)].builtAt
+			}
+			imageSummary.Retired = active.isRetired(projectName, imageName, lastBuild)
+			imageScans[projectName][imageName] = imgScans
+
+			// Retired imaj listede kalır (UI geçmişini gösterebilsin) ama projenin
+			// toplamlarına, notuna ve son tarama tarihine karışmaz.
+			if imageSummary.Retired {
+				retiredTotal++
+				project.Images = append(project.Images, *imageSummary)
+				continue
 			}
 
+			project.TotalScans += len(imgScans)
 			project.TotalVulns += imageSummary.TotalVulns
 			for severity, count := range imageSummary.SeverityCount {
 				project.SeverityCount[severity] += count
 			}
 
-			imageScans[projectName][imageName] = imgScans
 			project.Images = append(project.Images, *imageSummary)
 
 			if imageSummary.LastScan.After(project.LastScan) {
@@ -2177,17 +2350,17 @@ func rebuildIndex(exportDir string) error {
 	indexData = newIndex
 	indexMu.Unlock()
 
-	log.Printf("index rebuilt: %d trivy, %d checkov, %d osv, %d projects (%d parsed, %d cached)",
-		len(scans), len(checkovScans), len(osvScans), len(projects), parsed, reused)
+	log.Printf("index rebuilt: %d trivy, %d checkov, %d osv, %d projects, %d retired images (%d parsed, %d cached)",
+		len(scans), len(checkovScans), len(osvScans), len(projects), retiredTotal, parsed, reused)
 	return nil
 }
 
 // computeGrade returns a letter grade based on CRITICAL, HIGH and MEDIUM vulnerability counts.
 // A: CRITICAL=0, HIGH≤2,  MEDIUM≤5
 // B: CRITICAL=0, HIGH≤5,  MEDIUM≤10
-// C: CRITICAL≤2, HIGH≤8,  MEDIUM≤15
-// D: CRITICAL≤9  (fails C thresholds)
-// F: CRITICAL≥10
+// C: CRITICAL≤2, HIGH≤8   (MEDIUM tek başına C'nin altına düşürmez)
+// D: CRITICAL≤9, HIGH<100 (fails C thresholds)
+// F: CRITICAL≥10 or HIGH≥100
 func computeGrade(severityCount map[string]int) string {
 	critical := severityCount["CRITICAL"]
 	high := severityCount["HIGH"]
@@ -2197,13 +2370,42 @@ func computeGrade(severityCount map[string]int) string {
 		return "A"
 	case critical == 0 && high <= 5 && medium <= 10:
 		return "B"
-	case critical <= 2 && high <= 8 && medium <= 15:
+	case critical <= 2 && high <= 8:
 		return "C"
-	case critical <= 9:
+	case critical <= 9 && high < 100:
 		return "D"
 	default:
 		return "F"
 	}
+}
+
+// computeProjectGrade, proje notunu imaj notlarından üretir: temelde en kötü imaj notu.
+// Çoğunluk imaj iyi (A/B) ise not bir kademe yumuşatılır; böylece tek sorunlu imaj tüm
+// projeyi aşağı çekmez, sorunlu imaj kendi notuyla listede görünmeye devam eder.
+//
+// Yumuşatma yalnız en kötü not C ve altındaysa uygulanır: A/B zaten sorunlu değil, yoksa
+// tek imajlı ya da tamamı B olan proje sebepsiz A oluyordu. Quality gate bu notu okuduğu
+// için kritik açık içeren projede de uygulanmaz: açık, sağlıklı imajlarla telafi edilemez.
+func computeProjectGrade(images []ImageGrade) string {
+	worstGrade := "A"
+	goodCount := 0
+	hasCritical := false
+	for _, ig := range images {
+		if gradeOrder(ig.Grade) > gradeOrder(worstGrade) {
+			worstGrade = ig.Grade
+		}
+		if ig.Grade == "A" || ig.Grade == "B" {
+			goodCount++
+		}
+		if ig.SeverityCount["CRITICAL"] > 0 {
+			hasCritical = true
+		}
+	}
+
+	if gradeOrder(worstGrade) >= gradeOrder("C") && !hasCritical && goodCount > len(images)/2 {
+		return softenGrade(worstGrade)
+	}
+	return worstGrade
 }
 
 // exportFile pairs a scan file path with its modification time.
@@ -2232,34 +2434,32 @@ func collectJSONFiles(projectDir string, dirEntries []os.DirEntry) []exportFile 
 	return files
 }
 
-// newestFile returns the file with the most recent modification time.
-// files must be non-empty.
-func newestFile(files []exportFile) exportFile {
-	newest := files[0]
-	for _, f := range files[1:] {
-		if f.modTime.After(newest.modTime) {
-			newest = f
-		}
-	}
-	return newest
-}
-
-// cleanupProjectDir removes JSON scan files older than cutoff from projectDir,
-// always keeping the newest file. It returns the number of files deleted and kept.
-func cleanupProjectDir(projectDir string, cutoff time.Time) (deleted, kept int) {
+// cleanupProjectDir keeps the newest `keep` JSON scan files in projectDir and
+// removes the rest. It returns the number of files deleted and kept.
+// meta-*.json is deploy metadata, not a scan: it is never counted or removed.
+func cleanupProjectDir(projectDir string, keep int) (deleted, kept int) {
 	dirEntries, err := os.ReadDir(projectDir)
 	if err != nil {
 		return 0, 0
 	}
 
-	files := collectJSONFiles(projectDir, dirEntries)
-	if len(files) == 0 {
-		return 0, 0
+	var files []exportFile
+	for _, f := range collectJSONFiles(projectDir, dirEntries) {
+		if !strings.HasPrefix(filepath.Base(f.path), "meta-") {
+			files = append(files, f)
+		}
+	}
+	if len(files) <= keep {
+		return 0, len(files)
 	}
 
-	newest := newestFile(files)
-	for _, f := range files {
-		if f.path == newest.path || !f.modTime.Before(cutoff) {
+	// En yeni dosyalar başta olacak şekilde sırala; ilk `keep` tanesini koru.
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.After(files[j].modTime)
+	})
+
+	for i, f := range files {
+		if i < keep {
 			kept++
 			continue
 		}
@@ -2274,30 +2474,30 @@ func cleanupProjectDir(projectDir string, cutoff time.Time) (deleted, kept int) 
 	return deleted, kept
 }
 
-// cleanupOldExports removes scan files older than cleanupRetentionDays from each project
-// subdirectory under exportDir. At least one file (the newest) is always kept per directory,
-// regardless of its age.
-func cleanupOldExports(exportDir string) {
-	cutoff := time.Now().AddDate(0, 0, -cleanupRetentionDays)
-
+// cleanupOldExports keeps only the newest cleanupKeepLatest scan files per
+// subdirectory under exportDir and removes older ones. Returns total deleted/kept.
+func cleanupOldExports(exportDir string) (deleted, kept int) {
 	entries, err := os.ReadDir(exportDir)
 	if err != nil {
 		log.Printf("cleanup: failed to read export dir: %v", err)
-		return
+		return 0, 0
 	}
 
-	deleted := 0
-	kept := 0
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		d, k := cleanupProjectDir(filepath.Join(exportDir, entry.Name()), cutoff)
+		// .manifests tarama dizini değil: retention kuralı oraya uygulanmamalı.
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		d, k := cleanupProjectDir(filepath.Join(exportDir, entry.Name()), cleanupKeepLatest)
 		deleted += d
 		kept += k
 	}
 
 	log.Printf("cleanup: done — %d removed, %d kept", deleted, kept)
+	return deleted, kept
 }
 
 // softenGrade returns the grade one tier better (less severe). A stays A.
