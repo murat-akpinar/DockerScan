@@ -31,7 +31,8 @@ Trivy güvenlik tarama sonuçlarını toplayıp görselleştiren web dashboard u
 - **Genel Dashboard**: Tüm projelerin toplam istatistiklerini görüntüleme
 - **Detaylı Karşılaştırma**: İki tarama arasında hangi açıkların kapandığını/yeni eklendiğini gösteren diff görünümü
 - **Derin URL Routing**: `/projects/{projectName}` URL'leri doğrudan paylaşılabilir ve bookmarklanabilir
-- **Otomatik Temizlik**: 30 günden eski scan dosyaları otomatik silinir, her proje klasöründe en az bir dosya korunur
+- **Otomatik Temizlik**: Her imaj klasöründe yalnız en yeni 5 tarama tutulur (24 saatte bir veya `POST /api/cleanup` ile)
+- **CVE Kopyala**: Tek tıkla bir taramanın açıkları (ID, severity, başlık, paket → düzeltme sürümü) severity sırasıyla kopyalanır
 
 ## Hızlı Başlangıç
 
@@ -152,14 +153,23 @@ Backend (`/api/grades`) ve frontend dashboard aynı kriterleri kullanır:
 |-----|----------|------|--------|----------|
 | **A** | 0 | ≤ 2 | ≤ 5 | Mükemmel |
 | **B** | 0 | ≤ 5 | ≤ 10 | İyi |
-| **C** | ≤ 2 | ≤ 8 | ≤ 15 | Orta risk |
-| **D** | ≤ 9 | — | — | Yüksek risk |
-| **F** | ≥ 10 | — | — | Kritik risk |
+| **C** | ≤ 2 | ≤ 8 | — | Orta risk (MEDIUM tek başına C'nin altına düşürmez) |
+| **D** | ≤ 9 | < 100 | — | Yüksek risk |
+| **F** | ≥ 10 | veya ≥ 100 | — | Kritik risk |
 
-**Proje notu:** İmajların çoğunluğu (>%50) A veya B alıyorsa, proje notu en kötü imajdan bir kademe yumuşatılır.
+**İmaj notu**, imajın **tarihe göre en son taramasından** hesaplanır (etiket sürümüne göre değil). `?tag=test-v1.0` verilirse yalnız o etiketin taramalarına bakılır — eski bir `test-v2.0` taraması gate'in notuna karışmaz.
+
+**Proje notu:** en kötü imaj notudur. En kötü not C veya altındaysa, projede **hiç CRITICAL yoksa** ve imajların çoğunluğu (>%50) A veya B ise bir kademe yumuşatılır.
 Sorunlu imaj kendi notuyla listede görünmeye devam eder.
 
-Örnek: 2×A + 1×D → proje notu **C** (D değil)
+Örnek: 2×A + 1×D → proje notu **C** (D değil); 2×A + CRITICAL içeren 1×D → **D**
+
+**Retired imajlar:** pipeline aktif imaj listesini `POST /api/manifest` ile bildirirse, o projede hiçbir manifestte geçmeyen imajlar (ör. adı değişmiş/kaldırılmış ama registry'de durup her gece yeniden taranan imajlar) `retired` işaretlenir. Listede görünmeye devam ederler ama nota, toplamlara, `/api/summary` ve `/api/sbom`'a katılmazlar.
+
+```bash
+curl -s -X POST "http://<host>:3017/api/manifest" -H 'Content-Type: application/json' \
+  -d '{"source":"dockscan-test","app":"dockscan","images":["dockscan_backend","dockscan_nginx"]}'
+```
 
 ### Checkov (Dockerfile / IaC yanlış yapılandırmaları)
 
@@ -200,7 +210,12 @@ Tüm API istekleri nginx üzerinden `http://<host>:<FRONTEND_PORT>/api/...` ile 
 | GET | `/api/scans/{filename}` | Tarama detayları (vulnerability listesi) |
 | GET | `/api/compare?scan1={f}&scan2={f}` | İki tarama arası karşılaştırma |
 | GET | `/api/grades` | Trivy harf notları — tüm projeler |
-| GET | `/api/grades?project={name}` | Trivy harf notu — tek proje |
+| GET | `/api/grades?project={name}` | Trivy harf notu — tek proje (`_` ile `-` eşleşir) |
+| GET | `/api/grades?project={name}&tag={tag}` | Yalnız o etiketin son taramasından not |
+| GET | `/api/sbom` | Teknoloji envanteri: OS, `*_VERSION` env, paketler (`?project=`, `?packages=0`) |
+| POST | `/api/manifest` | Projenin aktif imajlarını bildir (geri kalanı retired olur) |
+| GET | `/api/manifests` | Bildirilen manifestler ve retired imajlar |
+| POST | `/api/cleanup` | Eski taramaları hemen sil (imaj başına en yeni 5 kalır) |
 | GET | `/api/checkov` | Tüm projelerin Checkov sonuçları |
 | GET | `/api/checkov?project={name}` | Belirli projenin Checkov sonuçları |
 | GET | `/api/osv` | Tüm projelerin OSV-Scanner sonuçları |
@@ -377,7 +392,9 @@ Kullanıcı (veya LB)
 
 - **Bellek içi index**: Uygulama açılışında tüm JSON dosyaları taranarak `IndexData` yapısında belleğe alınır; `/api/scans`, `/api/projects`, `/api/grades` endpoint'leri diski tekrar okumadan bu index'ten cevap üretir.
 - **Otomatik index yenileme**: Arka planda her 60 saniyede bir index yeniden oluşturulur; yeni eklenen JSON dosyaları kısa sürede görünür.
-- **Otomatik temizlik**: Her 24 saatte bir 30 günden eski scan dosyaları temizlenir; her proje klasöründe en yeni dosya daima korunur.
+- **Otomatik temizlik**: Her 24 saatte bir imaj klasörü başına yalnız en yeni 5 tarama tutulur (`meta-*.json` ve `.manifests/` silinmez). Export klasörü backend tarafından yazılabilir olmalı (`EXPORT_UID`/`EXPORT_GID`).
+- **Gecelik yeniden tarama**: `scan-nexus.sh` bir imajı hiç taranmamışsa, registry'de değiştiyse ya da son taraması `RESCAN_AFTER_HOURS` (varsayılan 20 — CVE DB her gün değişir) saatten eskiyse yeniden tarar. Yalnız en yeni `MAX_TAGS_PER_IMAGE` (varsayılan 2, `0` = hepsi) etiket taranır.
+- **Tarama kilidi**: `scan-nexus.sh` ve `trigger-nexus.sh` Trivy çalıştırmalarını ortak bir kilit dosyasında `flock` ile sıraya sokar; eşzamanlı taramalar `cache may be in use by another process` hatasıyla düşmek yerine bekler.
 - **HTTP timeout'ları**: `ReadTimeout`, `WriteTimeout`, `IdleTimeout` yapılandırılmıştır.
 - **Frontend debounce**: Proje arama kutusunda 300 ms debounce uygulanır.
 - **Derin URL routing**: `/projects/{projectName}` URL'leri tarayıcıda doğrudan açılabilir, geri/ileri tuşları çalışır.

@@ -31,7 +31,8 @@ A web dashboard that collects and visualizes Trivy security scan results. Aggreg
 - **Global Dashboard**: View aggregate statistics across all projects
 - **Diff Comparison**: See which vulnerabilities were fixed or newly introduced between two scans
 - **Deep URL Routing**: `/projects/{projectName}` URLs are directly shareable and bookmarkable
-- **Auto Cleanup**: Scan files older than 30 days are automatically deleted; at least one file per project folder is always kept
+- **Auto Cleanup**: Only the newest 5 scan files per image folder are kept (every 24h, or on demand via `POST /api/cleanup`)
+- **Copy CVEs**: One click copies a scan's vulnerabilities (ID, severity, title, package → fix version) sorted by severity
 
 ## Quick Start
 
@@ -152,13 +153,22 @@ The backend (`/api/grades`) and frontend dashboard use the same criteria:
 |-------|----------|------|--------|-------------|
 | **A** | 0 | ≤ 2 | ≤ 5 | Excellent |
 | **B** | 0 | ≤ 5 | ≤ 10 | Good |
-| **C** | ≤ 2 | ≤ 8 | ≤ 15 | Medium risk |
-| **D** | ≤ 9 | — | — | High risk |
-| **F** | ≥ 10 | — | — | Critical risk |
+| **C** | ≤ 2 | ≤ 8 | — | Medium risk (MEDIUM alone never drops below C) |
+| **D** | ≤ 9 | < 100 | — | High risk |
+| **F** | ≥ 10 | or ≥ 100 | — | Critical risk |
 
-**Project grade:** If the majority of images (>50%) receive A or B, the project grade is softened by one level from the worst image. The problematic image still appears in the list with its own grade.
+**Image grade** is computed from the image's **latest scan by date** (not by tag version). With `?tag=test-v1.0`, only scans of that tag are considered — an old `test-v2.0` scan can't leak into the gate's grade.
 
-Example: 2×A + 1×D → project grade **C** (not D)
+**Project grade:** the worst image grade. If the worst grade is C or below, the project has **no CRITICAL** vulnerabilities and the majority of images (>50%) are A or B, it is softened by one level. The problematic image still appears in the list with its own grade.
+
+Example: 2×A + 1×D → project grade **C** (not D); 2×A + 1×D with a CRITICAL → **D**
+
+**Retired images:** when a pipeline reports its active image list via `POST /api/manifest`, images of that project that are not in any manifest (e.g. renamed/removed images still in the registry and rescanned nightly) are marked `retired`. They stay visible but are excluded from grades, totals, `/api/summary` and `/api/sbom`.
+
+```bash
+curl -s -X POST "http://<host>:3017/api/manifest" -H 'Content-Type: application/json' \
+  -d '{"source":"dockscan-test","app":"dockscan","images":["dockscan_backend","dockscan_nginx"]}'
+```
 
 ### Checkov (Dockerfile / IaC misconfigurations)
 
@@ -199,7 +209,12 @@ All API requests are accessed via nginx at `http://<host>:<FRONTEND_PORT>/api/..
 | GET | `/api/scans/{filename}` | Scan details (vulnerability list) |
 | GET | `/api/compare?scan1={f}&scan2={f}` | Compare two scans |
 | GET | `/api/grades` | Trivy letter grades for all projects |
-| GET | `/api/grades?project={name}` | Trivy letter grade for a single project |
+| GET | `/api/grades?project={name}` | Trivy letter grade for a single project (`_` and `-` match) |
+| GET | `/api/grades?project={name}&tag={tag}` | Grade from the latest scan of a single tag |
+| GET | `/api/sbom` | Technology inventory: OS, `*_VERSION` env, packages (`?project=`, `?packages=0`) |
+| POST | `/api/manifest` | Report a project's active images (retires the rest) |
+| GET | `/api/manifests` | Reported manifests and their retired images |
+| POST | `/api/cleanup` | Delete old scans now (keeps newest 5 per image) |
 | GET | `/api/checkov` | Checkov results for all projects |
 | GET | `/api/checkov?project={name}` | Checkov results for a specific project |
 | GET | `/api/osv` | OSV-Scanner results for all projects |
@@ -376,7 +391,9 @@ User (or LB)
 
 - **In-memory index**: All JSON files are scanned at startup and loaded into the `IndexData` structure; `/api/scans`, `/api/projects`, and `/api/grades` endpoints serve responses from this index without hitting the disk again.
 - **Auto index refresh**: The index is rebuilt in the background every 60 seconds; newly added JSON files become visible shortly after.
-- **Auto cleanup**: Scan files older than 30 days are purged every 24 hours; the most recent file in each project folder is always preserved.
+- **Auto cleanup**: Every 24 hours only the newest 5 scan files per image folder are kept (`meta-*.json` and `.manifests/` are never touched). The export volume must be writable by the backend (`EXPORT_UID`/`EXPORT_GID`).
+- **Nightly rescans**: `scan-nexus.sh` rescans an image when it was never scanned, changed in the registry, or its last scan is older than `RESCAN_AFTER_HOURS` (default 20 — the CVE DB changes daily). Only the newest `MAX_TAGS_PER_IMAGE` tags (default 2, `0` = all) are scanned.
+- **Scan lock**: `scan-nexus.sh` and `trigger-nexus.sh` serialize Trivy runs with `flock` on a shared lock file, so concurrent scans wait instead of failing with `cache may be in use by another process`.
 - **HTTP timeouts**: `ReadTimeout`, `WriteTimeout`, and `IdleTimeout` are configured.
 - **Frontend debounce**: A 300 ms debounce is applied to the project search box.
 - **Deep URL routing**: `/projects/{projectName}` URLs can be opened directly in the browser; browser back/forward navigation works correctly.
