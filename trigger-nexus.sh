@@ -8,6 +8,43 @@ TRIVY_IMAGE="aquasec/trivy:latest"
 TRIVY_DB_PATH="/app/DockScan/trivy-db"
 
 # ---------------------------------------------------------------------------
+# Eşzamanlı tarama kilidi
+# ---------------------------------------------------------------------------
+# Trivy cache dizinine (TRIVY_DB_PATH) ÖZEL kilit alıyor. Aynı anda iki tarama
+# başlarsa ikincisi birkaç saniye bekleyip şu hatayla DÜŞÜYOR:
+#   unable to initialize fs cache: cache may be in use by another process: timeout
+# Birden fazla pipeline aynı anda build alınca ya da gecelik tarama (scan-nexus.sh)
+# sürerken olur. flock ile taramalar sıraya girer: düşmek yerine beklerler. Kilit
+# YALNIZ docker run süresince tutulur, bekleyen pipeline bir tarama boyu gecikir.
+TRIVY_LOCK_FILE="${TRIVY_LOCK_FILE:-$(dirname "$TRIVY_DB_PATH")/.trivy-scan.lock}"
+TRIVY_LOCK_WAIT="${TRIVY_LOCK_WAIT:-1800}"
+
+trivy_lock_acquire() {
+    command -v flock >/dev/null 2>&1 || {
+        echo "[WARN] flock bulunamadı → kilitsiz devam ediliyor" >&2
+        return 0
+    }
+    # Kilidi farklı kullanıcılar alabilir (CI ssh kullanıcısı, cron): hepsi aynı
+    # dosyayı açabilsin diye 666 ile oluşturuluyor.
+    [ -e "$TRIVY_LOCK_FILE" ] || ( umask 000; : > "$TRIVY_LOCK_FILE" ) 2>/dev/null || true
+    # Yazılabilir değilse kilitsiz devam: eski davranış, kötüleşme yok.
+    if [ ! -w "$TRIVY_LOCK_FILE" ]; then
+        echo "[WARN] Kilit dosyası yazılamıyor ($TRIVY_LOCK_FILE) → kilitsiz devam" >&2
+        return 0
+    fi
+    exec 9>"$TRIVY_LOCK_FILE"
+    flock -n 9 && return 0
+    echo "[INFO] Başka bir tarama sürüyor, sıra bekleniyor (en çok ${TRIVY_LOCK_WAIT}s)..."
+    flock -w "$TRIVY_LOCK_WAIT" 9 && return 0
+    echo "[ERROR] Trivy cache kilidi ${TRIVY_LOCK_WAIT}s içinde alınamadı" >&2
+    return 1
+}
+
+trivy_lock_release() {
+    flock -u 9 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
 # Argüman ayrıştırma
 # ---------------------------------------------------------------------------
 IMAGE_NAME=""
@@ -52,6 +89,8 @@ OUTPUT_FILE="$EXPORT_DIR/$OUTPUT_FILENAME"
 echo "[INFO] İmaj taranıyor : $IMAGE_URL"
 echo "[INFO] Çıktı dosyası  : $OUTPUT_FILE"
 
+trivy_lock_acquire
+
 docker run --rm \
     -e TRIVY_USERNAME="${NEXUS_USER:-}" \
     -e TRIVY_PASSWORD="${NEXUS_PASS:-}" \
@@ -62,6 +101,8 @@ docker run --rm \
     --format json \
     --output "/output/$OUTPUT_FILENAME" \
     "$IMAGE_URL"
+
+trivy_lock_release
 
 chmod 644 "$OUTPUT_FILE" 2>/dev/null || true
 echo "[INFO] Tarama tamamlandı: $OUTPUT_FILE"
