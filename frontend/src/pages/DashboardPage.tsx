@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatDateTime } from '../utils/date';
 import { useLanguage, LangToggle } from '../i18n/LanguageContext';
 import {
   PieChart,
@@ -435,7 +436,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({
                       </h3>
                       <p className="text-xs text-catppuccin-overlay1 mt-1">
                         {project.totalScans} {t.common.scans} • {t.common.lastScan}:{' '}
-                        {new Date(project.lastScan).toLocaleString()}
+                        {formatDateTime(project.lastScan)}
                       </p>
                     </div>
                     <div className="flex items-center gap-4">

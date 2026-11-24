@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { formatDateTime } from '../utils/date';
 import { useLanguage, LangToggle } from '../i18n/LanguageContext';
 
 type ProjectSummary = {
@@ -274,7 +275,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                               )}
                               <p className="text-xs text-catppuccin-overlay1 mt-1">
                                 {image.scanCount} {t.common.scans} • {t.common.lastScan}:{' '}
-                                {new Date(image.latestScan.modifiedAt).toLocaleString()}
+                                {formatDateTime(image.latestScan.modifiedAt)}
                               </p>
                             </div>
                             <div className="flex items-center gap-3">
@@ -359,7 +360,7 @@ const ProjectsPage: React.FC<ProjectsPageProps> = ({
                         </h3>
                         <p className="text-xs text-catppuccin-overlay1 mt-1">
                           {project.totalScans} {t.common.scans} • {t.common.lastScan}:{' '}
-                          {new Date(project.lastScan).toLocaleString()}
+                          {formatDateTime(project.lastScan)}
                         </p>
                       </div>
                       <div className="flex items-center gap-4">

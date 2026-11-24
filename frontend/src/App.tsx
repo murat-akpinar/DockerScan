@@ -17,6 +17,7 @@ import ProjectsPage from './pages/ProjectsPage';
 import DashboardPage from './pages/DashboardPage';
 import SecurityPage from './pages/SecurityPage';
 import TimelineTooltip from './components/TimelineTooltip';
+import { formatDateTime } from './utils/date';
 import { useLanguage, LangToggle } from './i18n/LanguageContext';
 
 type ProjectSummary = {
@@ -133,6 +134,38 @@ type ProjectAggregatedStats = {
   totalVulns: number;
   severityCount: Record<string, number>;
 };
+
+function encodeScanPath(filename: string): string {
+  return filename
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
+// Collapse tabs/newlines so a value stays on a single line
+function cleanCell(value?: string): string {
+  if (!value) return '';
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+async function copyToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  // Fallback for non-HTTPS environments
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand('copy');
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
 
 function aggregateProjectStats(
   latestMap: Record<string, Record<string, ScanSummary>>
@@ -255,6 +288,7 @@ function App() {
   const [selectedScan2, setSelectedScan2] = useState<string>('');
   const [comparisonLoading, setComparisonLoading] = useState(false);
   const [comparisonError, setComparisonError] = useState<string | null>(null);
+  const [copiedScan, setCopiedScan] = useState<string | null>(null);
 
   // Listen for browser back/forward buttons
   useEffect(() => {
@@ -408,6 +442,37 @@ function App() {
     }
   };
 
+  // Copy all vulnerabilities of a scan to clipboard (backend returns them sorted by severity)
+  const handleCopyScanVulns = async (filename: string) => {
+    try {
+      let vulns = imageVulnDetails[filename];
+      if (!vulns) {
+        const res = await fetch(`${API_BASE}/api/scans/${encodeScanPath(filename)}`);
+        if (!res.ok) {
+          throw new Error(`API error: ${res.status}`);
+        }
+        const data: { vulnerabilities: Vulnerability[] } = await res.json();
+        vulns = data.vulnerabilities || [];
+        setImageVulnDetails((prev) => ({ ...prev, [filename]: vulns! }));
+      }
+      const text = vulns
+        .map((v) => {
+          const fixed = v.FixedVersion ? `→ v${v.FixedVersion}` : `→ ${t.projectDetail.noFix}`;
+          return [
+            `${v.VulnerabilityID}\t${v.Severity}`,
+            cleanCell(v.Title),
+            `${v.PkgName} v${v.InstalledVersion} ${fixed}`,
+          ].join('\n');
+        })
+        .join('\n\n');
+      await copyToClipboard(text);
+      setCopiedScan(filename);
+      setTimeout(() => setCopiedScan((prev) => (prev === filename ? null : prev)), 2000);
+    } catch (err) {
+      console.error('Failed to copy vulnerabilities:', err);
+    }
+  };
+
   // Load vulnerabilities for expanded scans (only for .json filenames)
   useEffect(() => {
     if (!projectDetails) return;
@@ -422,10 +487,7 @@ function App() {
       setLoadingImageDetails((prev) => ({ ...prev, [identifier]: true }));
 
       // URL encode the path to handle subdirectories
-      const encodedPath = identifier
-        .split('/')
-        .map(segment => encodeURIComponent(segment))
-        .join('/');
+      const encodedPath = encodeScanPath(identifier);
 
       // Load vulnerability details for this scan
       const loadVulnDetails = async () => {
@@ -955,7 +1017,7 @@ function App() {
                               </h3>
                               <p className="text-xs text-catppuccin-overlay1 mt-1">
                                 {t.projectDetail.scanCount(image.scans.length)} • {t.common.lastScan}:{' '}
-                                {new Date(image.lastScan).toLocaleString()}
+                                {formatDateTime(image.lastScan)}
                               </p>
                             </div>
                           </div>
@@ -1061,7 +1123,7 @@ function App() {
                                             }
                                           </p>
                                           <p className="text-xs text-catppuccin-overlay1 mt-0.5">
-                                            {new Date(scan.modifiedAt).toLocaleString()}
+                                            {formatDateTime(scan.modifiedAt)}
                                           </p>
                                           <button
                                             type="button"
@@ -1078,6 +1140,18 @@ function App() {
                                             style={{ position: 'relative', zIndex: 10 }}
                                           >
                                             {t.projectDetail.compare}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.preventDefault();
+                                              e.stopPropagation();
+                                              void handleCopyScanVulns(scan.filename);
+                                            }}
+                                            disabled={scan.totalVulns === 0}
+                                            className="text-xs text-catppuccin-blue hover:text-catppuccin-sapphire mt-1 ml-3 underline cursor-pointer relative z-10 bg-transparent border-none p-0 disabled:text-catppuccin-overlay1 disabled:no-underline disabled:cursor-not-allowed"
+                                          >
+                                            {copiedScan === scan.filename ? t.projectDetail.copied : t.projectDetail.copyCves}
                                           </button>
                                         </div>
                                       </div>
@@ -1318,7 +1392,7 @@ function App() {
                       {scan.imageName
                          ? `${scan.imageName}${scan.tag ? ':' + scan.tag : ''}`
                         : (scan.artifactName || scan.filename)
-                      } - {new Date(scan.modifiedAt).toLocaleString()}
+                      } - {formatDateTime(scan.modifiedAt)}
                     </option>
                   ))}
                 </select>
@@ -1344,7 +1418,7 @@ function App() {
                         {scan.imageName
                          ? `${scan.imageName}${scan.tag ? ':' + scan.tag : ''}`
                           : (scan.artifactName || scan.filename)
-                        } - {new Date(scan.modifiedAt).toLocaleString()}
+                        } - {formatDateTime(scan.modifiedAt)}
                     </option>
                   ))}
                 </select>
@@ -1398,7 +1472,7 @@ function App() {
                       {t.comparison.removedLabel(comparisonData.summary.removed)}
                     </div>
                     <div className="text-xs text-catppuccin-overlay1 mb-2">
-                      {comparisonData.scan1.artifactName} - {new Date(comparisonData.scan1.scanDate).toLocaleString()}
+                      {comparisonData.scan1.artifactName} - {formatDateTime(comparisonData.scan1.scanDate)}
                     </div>
                     <div className="space-y-2 max-h-96 overflow-y-auto">
                       {(comparisonData.removed || []).map((vuln, idx) => (
@@ -1422,7 +1496,7 @@ function App() {
                       {t.comparison.addedLabel(comparisonData.summary.added)}
                     </div>
                     <div className="text-xs text-catppuccin-overlay1 mb-2">
-                      {comparisonData.scan2.artifactName} - {new Date(comparisonData.scan2.scanDate).toLocaleString()}
+                      {comparisonData.scan2.artifactName} - {formatDateTime(comparisonData.scan2.scanDate)}
                     </div>
                     <div className="space-y-2 max-h-96 overflow-y-auto">
                       {(comparisonData.added || []).map((vuln, idx) => (

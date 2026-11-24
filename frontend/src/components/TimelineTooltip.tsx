@@ -6,7 +6,10 @@ import type { TooltipProps } from 'recharts';
 const TimelineTooltip: React.FC<TooltipProps<number, string>> = ({ active, payload, label }) => {
   if (!active || !payload || !payload.length) return null;
 
-  const visible = payload.filter((item) => typeof item.value === 'number');
+  // En yüksek değer en üstte olacak şekilde sırala; üst üste binen noktalarda okumayı kolaylaştırır.
+  const visible = payload
+    .filter((item) => typeof item.value === 'number')
+    .sort((a, b) => (b.value as number) - (a.value as number));
   if (!visible.length) return null;
 
   return (
@@ -18,18 +21,38 @@ const TimelineTooltip: React.FC<TooltipProps<number, string>> = ({ active, paylo
         padding: '8px 12px',
         boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
         pointerEvents: 'none',
+        maxWidth: 280,
       }}
     >
-      <div style={{ fontSize: 12, marginBottom: 4, color: '#cdd6f4' }}>{label}</div>
+      <div style={{ fontSize: 12, marginBottom: 6, color: '#cdd6f4' }}>{label}</div>
       {visible.map((item) => (
         <div
           key={String(item.dataKey)}
-          style={{ fontSize: 12, color: (item.color as string) || '#cdd6f4' }}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            fontSize: 12,
+            color: '#cdd6f4',
+            lineHeight: 1.6,
+          }}
         >
-          <span>{item.name}</span>
-          {': '}
-          <strong>{item.value}</strong>
-          <span> açık</span>
+          <span
+            style={{
+              width: 9,
+              height: 9,
+              borderRadius: 2,
+              backgroundColor: (item.color as string) || '#cdd6f4',
+              flexShrink: 0,
+            }}
+          />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {item.name}
+          </span>
+          <strong style={{ marginLeft: 'auto', paddingLeft: 12 }}>
+            {item.value}
+            <span style={{ fontWeight: 400, color: '#9399b2' }}> açık</span>
+          </strong>
         </div>
       ))}
     </div>

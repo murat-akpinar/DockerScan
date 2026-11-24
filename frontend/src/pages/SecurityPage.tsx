@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
+import { formatDateTime } from '../utils/date';
 import { useLanguage, LangToggle } from '../i18n/LanguageContext';
 
 type CheckovFinding = {
@@ -334,7 +335,7 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
                               </h3>
                               <p className="text-xs text-catppuccin-overlay1 mt-1">
                                 {t.projectDetail.scanCount(service.totalScans)} • {t.common.lastScan}:{' '}
-                                {service.lastScan ? new Date(service.lastScan).toLocaleString() : '-'}
+                                {service.lastScan ? formatDateTime(service.lastScan) : '-'}
                               </p>
                             </div>
                           </div>
@@ -414,7 +415,7 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
                                             Checkov{scan.tag ? ` (${scan.tag})` : ''}
                                           </p>
                                           <p className="text-xs text-catppuccin-overlay1 mt-0.5">
-                                            {new Date(scan.scannedAt).toLocaleString()}
+                                            {formatDateTime(scan.scannedAt)}
                                           </p>
                                         </div>
                                       </div>
@@ -498,7 +499,7 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
                                             OSV-Scanner{scan.tag ? ` (${scan.tag})` : ''}
                                           </p>
                                           <p className="text-xs text-catppuccin-overlay1 mt-0.5">
-                                            {new Date(scan.scannedAt).toLocaleString()}
+                                            {formatDateTime(scan.scannedAt)}
                                           </p>
                                         </div>
                                       </div>
@@ -653,7 +654,7 @@ const SecurityPage: React.FC<SecurityPageProps> = ({ apiBase, goDashboard }) => 
                           <h3 className="text-base font-semibold text-catppuccin-text">{name}</h3>
                           {stats.lastScan && (
                             <p className="text-xs text-catppuccin-overlay1 mt-1">
-                              {t.common.lastScan}: {new Date(stats.lastScan).toLocaleString()}
+                              {t.common.lastScan}: {formatDateTime(stats.lastScan)}
                             </p>
                           )}
                         </div>
