@@ -5,6 +5,9 @@ services:
       dockerfile: Dockerfile
     image: dockscan_backend:${VERSION:-latest}
     container_name: dockscan_backend
+    # Export klasörü host kullanıcısına ait; cleanup ve /api/manifest yazabilsin
+    # diye backend aynı uid ile çalışır.
+    user: "${EXPORT_UID:-1000}:${EXPORT_GID:-1000}"
     env_file:
       - .env
     ports:
@@ -16,7 +19,8 @@ services:
       - FRONTEND_PORT=${FRONTEND_PORT}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
     volumes:
-      - ${EXPORT_DIR:-./export}:/app/export:ro
+      # read-write: cleanup eski taramaları siler, manifestler .manifests/ altına yazılır
+      - ${EXPORT_DIR:-./export}:/app/export
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/health || exit 1"]
       interval: 30s

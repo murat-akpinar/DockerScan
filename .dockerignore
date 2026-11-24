@@ -1,0 +1,13 @@
+.git
+.gitignore
+export
+images
+node_modules
+**/node_modules
+frontend/dist
+# Repo kökündeki .env build'e girmesin (VITE_API_BASE build-arg ile veriliyor)
+/.env
+/.example.env
+*.md
+*.sh
+*.ps1
